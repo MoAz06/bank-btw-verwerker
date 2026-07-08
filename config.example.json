@@ -1,0 +1,5 @@
+{
+  "eigen_rekeningen": ["NL00BANK0123456789"],
+  "eigen_naam_patronen": ["eigen spaarrekening"],
+  "nul_btw_patronen": ["kosten zakelijk betalingsverkeer"]
+}
