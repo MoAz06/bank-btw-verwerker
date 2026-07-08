@@ -1,0 +1,12 @@
+# Gevoelige financiele data - nooit in git
+*.csv
+*.xlsx
+*.pdf
+
+# Build-artefacten (te herbouwen uit de source)
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*.exe
