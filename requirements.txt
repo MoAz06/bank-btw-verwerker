@@ -1,1 +1,11 @@
+# Kern (Excel + csv verwerking)
 openpyxl
+
+# Bonnen lezen (PDF-tekst + OCR-fallback op gescande/foto-bonnen)
+pdfplumber
+pymupdf
+pytesseract
+pillow
+
+# Optioneel: HEIC/HEIF telefoon-foto's (iPhone). Zonder dit werken JPG/PNG gewoon.
+# pillow-heif

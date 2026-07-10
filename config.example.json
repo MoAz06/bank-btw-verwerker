@@ -1,5 +1,36 @@
 {
+  "_uitleg": "Kopieer dit naar config.json en vul je eigen gegevens in. Alles is optioneel; ontbrekende sleutels krijgen een verstandige standaard.",
+
   "eigen_rekeningen": ["NL00BANK0123456789"],
+  "_eigen_rekeningen": "IBAN's die als prive gelden (bv. je eigen spaarrekening) - transacties naar/van deze rekeningen tellen nergens mee.",
+
   "eigen_naam_patronen": ["eigen spaarrekening"],
-  "nul_btw_patronen": ["kosten zakelijk betalingsverkeer"]
+  "_eigen_naam_patronen": "Naamdelen die ook als prive gelden (voor overboekingen zonder tegenrekening-IBAN).",
+
+  "nul_btw_patronen": ["kosten zakelijk betalingsverkeer"],
+  "_nul_btw_patronen": "Partijen waar standaard 0% btw op zit (bankkosten, verzekering, lease).",
+
+  "verlegd_patronen": [],
+  "_verlegd_patronen": "Partijen met verlegde btw (onderaanneming bouw). Krijgt 0% + aparte rubriek in de aangifte-tab. Fiscaal maatwerk - overleg met je boekhouder.",
+
+  "uitsluit_patronen": ["lening", "aflossing"],
+  "_uitsluit_patronen": "Woorden die een balans-mutatie aanduiden (geen kosten/omzet). Hele-woord-match.",
+
+  "investering_drempel": 450.0,
+  "_investering_drempel": "Uitgaven (excl. btw) boven dit bedrag komen als kandidaat op de tab Investeringen.",
+
+  "geen_investering_leveranciers": ["Wasco", "Technische Unie", "Bouwmaat", "Hornbach"],
+  "_geen_investering_leveranciers": "Leveranciers die ook bij grote bedragen nooit een investering zijn (materiaal, lease, diensten).",
+
+  "leverancier_aliassen": {"ccv*mijnleverancier": "Mijn Leverancier"},
+  "_leverancier_aliassen": "Ruwe banknaam (deel, kleine letters) -> nette leveranciersnaam.",
+
+  "kor_actief": false,
+  "_kor_actief": "Zet op true als je in de Kleineondernemersregeling zit (geen btw op verkoop, geen voorbelasting terug).",
+
+  "jaaromzet_reeds": 0.0,
+  "_jaaromzet_reeds": "Omzet excl. btw eerder dit jaar (voor de KOR-grens van 20.000).",
+
+  "boekhoud_export": true,
+  "_boekhoud_export": "Schrijf naast de Excel ook een import-CSV voor je boekhouder."
 }
