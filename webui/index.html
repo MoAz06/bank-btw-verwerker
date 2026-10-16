@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kwartaal — btw uit je bankbestand</title>
+  <link rel="icon" href="app-icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#hoofdinhoud">Direct naar de inhoud</a>
+
+  <header class="app-kop">
+    <div class="app-titel" aria-label="Kwartaal">
+      <div>
+        <h1>Kwartaal</h1>
+        <p class="ondertitel">Btw uit je bankbestand</p>
+      </div>
+    </div>
+    <div class="app-acties">
+      <button type="button" id="knop-zoeken" class="knop knop-zoeken" aria-label="Zoeken" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+        <span>Zoeken</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+      <button type="button" id="knop-kies" class="knop knop-primair" aria-label="Bankbestand openen of vervangen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" /></svg>
+        <span>Open bankbestand</span>
+      </button>
+      <button type="button" id="knop-excel" class="knop" aria-label="Kwartaal exporteren" hidden disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12m0 0 4-4m-4 4-4-4M5 20h14" /></svg>
+        <span>Exporteren</span>
+      </button>
+      <div class="instellingen">
+        <button type="button" id="knop-instellingen" class="knop-klein knop-instellingen"
+                aria-label="Instellingen" aria-haspopup="dialog" aria-expanded="false"
+                aria-controls="instellingen-menu" title="Instellingen">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.25" />
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+          </svg>
+        </button>
+        <div id="instellingen-menu" class="instellingen-menu" role="dialog" aria-label="Weergave-instellingen" hidden>
+          <div class="instellingen-kop">
+            <strong>Weergave</strong>
+            <span>Pas de app aan jouw voorkeur aan</span>
+          </div>
+          <div class="fontgroep" role="group" aria-label="Tekstgrootte">
+            <span class="a11y-label">Tekstgrootte:</span>
+            <button type="button" class="knop-klein" data-scale="1" aria-label="Standaard tekstgrootte" aria-pressed="true">A</button>
+            <button type="button" class="knop-klein groter" data-scale="1.15" aria-label="Grote tekst" aria-pressed="false">A+</button>
+            <button type="button" class="knop-klein grootst" data-scale="1.3" aria-label="Extra grote tekst" aria-pressed="false">A++</button>
+          </div>
+          <button type="button" id="knop-thema" class="knop-klein">Thema wijzigen</button>
+          <button type="button" id="knop-help" class="knop-klein" aria-expanded="false" aria-controls="glossary">Uitleg btw-termen</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <dialog id="glossary" class="glossary" aria-labelledby="glossary-titel">
+    <div class="glossary-kop">
+      <div>
+        <span class="dialoog-label">Naslag</span>
+        <h2 id="glossary-titel">Uitleg van btw-termen</h2>
+      </div>
+      <button type="button" id="knop-help-sluiten" class="knop-klein">Sluiten</button>
+    </div>
+    <dl>
+      <dt>Voorbelasting (5b)</dt><dd>De btw die jij aan leveranciers betaalde en mag terugvragen.</dd>
+      <dt>Verschuldigde btw (5a)</dt><dd>De btw die je klanten aan jou betaalden en moet afdragen.</dd>
+      <dt>Te betalen / terug (5c)</dt><dd>5a min 5b. Plus = betalen aan de Belastingdienst, min = terugkrijgen.</dd>
+      <dt>Rubriek 1a</dt><dd>Je omzet die met 21% btw is belast.</dd>
+      <dt>Verlegde btw (1e / 4b)</dt><dd>Bij onderaanneming wordt de btw "verlegd": de afnemer draagt de btw af, niet jij. Fiscaal maatwerk — check met je boekhouder.</dd>
+      <dt>KOR</dt><dd>Kleineondernemersregeling: onder € 20.000 omzet kun je vrijstelling van btw kiezen. Dan geen aangifte.</dd>
+      <dt>KIA</dt><dd>Kleinschaligheidsinvesteringsaftrek: extra aftrek als je in een jaar genoeg in bedrijfsmiddelen investeert.</dd>
+      <dt>Kredietfactuur</dt><dd>Terugbetaling/creditnota. Telt negatief mee, want het verlaagt je kosten en je teruggevraagde btw.</dd>
+      <dt>Investering</dt><dd>Een bedrijfsmiddel dat jaren meegaat (bus, machine). Schrijf je af over meerdere jaren i.p.v. in één keer als kosten.</dd>
+    </dl>
+  </dialog>
+
+  <div class="app-meta">
+    <div id="dossier-context" class="dossier-context" hidden>
+      <strong id="periode-label"></strong>
+      <span id="periode-bereik"></span>
+      <span id="bedrijfsnaam" class="context-bedrijf" hidden></span>
+      <span id="bestandsregel" class="bestandsregel"></span>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+  </div>
+
+  <main id="hoofdinhoud" tabindex="-1">
+    <!-- Leeg-scherm zolang er niets geladen is -->
+    <section id="leeg" class="leeg">
+      <div class="leeg-illustratie" aria-hidden="true">
+        <svg viewBox="0 0 48 48"><path d="M14 5h14l8 8v29H14z"/><path d="M28 5v9h8M20 23h10M20 29h10M20 35h6"/></svg>
+      </div>
+      <div class="leeg-inhoud">
+        <span class="eyebrow">Nieuw kwartaal</span>
+        <h2>Begin met je ING-export</h2>
+        <p>Kwartaal controleert de periode en bankregels voordat er iets wordt opgenomen.</p>
+        <div class="leeg-acties">
+          <button type="button" id="knop-kies-leeg" class="knop knop-primair">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" /></svg>
+            Kies ING-bestand
+          </button>
+          <span>CSV · verwerking blijft op deze computer</span>
+        </div>
+        <ul class="vertrouwen" aria-label="Kenmerken">
+          <li>Geen upload</li>
+          <li>Geen account</li>
+          <li>Export voor Excel en boekhouding</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="import-review" class="import-review" aria-labelledby="import-review-titel" hidden>
+      <header class="import-kop">
+        <span class="import-status" id="import-status">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.2 3.2 7.8-8.2"/></svg>
+          <span id="import-status-tekst">Bestand gecontroleerd</span>
+        </span>
+        <h2 id="import-review-titel" tabindex="-1">Controleer de import</h2>
+        <p>Deze controle verandert het huidige kwartaal nog niet.</p>
+      </header>
+      <div class="import-periode">
+        <strong id="import-periode-label"></strong>
+        <span id="import-periode-bereik"></span>
+        <span id="import-bestand"></span>
+      </div>
+      <dl class="import-samenvatting">
+        <div><dt>Opgenomen</dt><dd id="import-verwerkt">—</dd></div>
+        <div><dt>Buiten beschouwing</dt><dd id="import-uitgesloten">—</dd></div>
+        <div><dt>Te controleren</dt><dd id="import-aandacht">—</dd></div>
+      </dl>
+      <p id="import-oordeel" class="import-oordeel"></p>
+      <details class="import-details">
+        <summary>Details van de verwerking</summary>
+        <dl>
+          <div><dt>Bronregels</dt><dd id="import-bronregels">—</dd></div>
+          <div><dt>Privéboekingen</dt><dd id="import-prive">—</dd></div>
+          <div><dt>Belastingdienst</dt><dd id="import-belastingdienst">—</dd></div>
+          <div><dt>Uitgesloten</dt><dd id="import-uitgesloten-detail">—</dd></div>
+          <div><dt>Niet ingedeeld</dt><dd id="import-niet-ingedeeld">—</dd></div>
+          <div><dt>Buiten periode</dt><dd id="import-buiten-periode">—</dd></div>
+        </dl>
+      </details>
+      <div class="import-acties">
+        <button type="button" id="import-bevestigen" class="knop knop-primair">Gebruik dit kwartaal</button>
+        <button type="button" id="import-ander" class="knop">Ander bestand kiezen</button>
+        <button type="button" id="import-annuleren" class="tekstknop">Annuleren</button>
+      </div>
+      <p class="import-privacy">De verwerking en het bestand blijven op deze computer.</p>
+    </section>
+
+    <section id="werkblad" hidden>
+      <nav class="tabs" aria-label="Onderdelen">
+        <div role="tablist" id="tablist" aria-label="Onderdelen"></div>
+        <button type="button" id="meer-knop" class="meer-knop" aria-haspopup="dialog" aria-controls="meer-menu">Meer</button>
+      </nav>
+      <div id="tab-inhoud" class="tab-inhoud" tabindex="-1"></div>
+    </section>
+  </main>
+
+  <dialog id="export-dialoog" class="dialoog" aria-labelledby="export-titel">
+    <form id="export-form">
+      <header class="dialoog-kop">
+        <div>
+          <span class="dialoog-label">Export</span>
+          <h2 id="export-titel">Kwartaal exporteren</h2>
+          <p id="export-periode"></p>
+        </div>
+        <button type="button" id="export-sluiten" class="icoonknop" aria-label="Sluiten">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <div class="export-bestand">
+        <span>Voorgestelde bestandsnaam</span>
+        <strong id="export-bestandsnaam"></strong>
+      </div>
+      <div class="export-inhoud">
+        <h3>Inhoud</h3>
+        <ul id="export-onderdelen"></ul>
+      </div>
+      <p class="dialoog-notitie">Je kiest in de volgende stap waar de bestanden worden opgeslagen.</p>
+      <div class="dialoog-acties">
+        <button type="button" id="export-annuleren" class="knop">Annuleren</button>
+        <button type="submit" id="export-bevestigen" class="knop knop-primair">Kies locatie en exporteer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="command-palette" class="command-palette" aria-label="Snel zoeken en navigeren">
+    <div class="command-zoekveld">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+      <input type="search" id="command-search" autocomplete="off"
+             aria-label="Zoek transacties of ga naar"
+             placeholder="Zoek transacties of ga naar…">
+      <kbd>Esc</kbd>
+    </div>
+    <div id="command-results" class="command-results"></div>
+  </dialog>
+
+  <dialog id="meer-menu" class="meer-menu" aria-labelledby="meer-titel">
+    <header class="dialoog-kop">
+      <h2 id="meer-titel">Rapporten</h2>
+      <button type="button" id="meer-sluiten" class="icoonknop" aria-label="Sluiten">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </header>
+    <div id="meer-lijst" class="meer-lijst"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+    <strong id="toast-titel"></strong>
+    <span id="toast-detail"></span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
