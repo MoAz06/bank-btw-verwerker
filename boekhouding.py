@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from berekening import bepaal_aangifte_info, bepaal_btw, excl_van
@@ -182,6 +182,36 @@ def bepaal_geldige_jaarmaanden(bestandsnaam: str):
     return geldig
 
 
+def bepaal_kwartaal_venster(bestandsnaam: str):
+    """(start, eind) van het kwartaal als de bestandsnaam een volledig kwartaal beschrijft, anders None.
+
+    Regel (dezelfde als het periodelabel in de app): de export begint exact op dag 1 van een
+    kwartaal en eindigt op of maximaal 7 dagen na het kwartaaleinde (ING-exports lopen in de
+    praktijk soms een paar dagen door). Boekingen na het kwartaaleinde horen dan in het
+    volgende kwartaal, anders tel je ze twee keer.
+    """
+    match = BESTANDSNAAM_DATUM_PATROON.search(bestandsnaam or "")
+    if not match:
+        return None
+    try:
+        d1, m1, j1, d2, m2, j2 = map(int, match.groups())
+        start, eind = datetime(j1, m1, d1), datetime(j2, m2, d2)
+    except ValueError:
+        return None
+    if eind < start:
+        start, eind = eind, start
+    kwartaal = (start.month - 1) // 3 + 1
+    kwartaal_start = datetime(start.year, 1 + (kwartaal - 1) * 3, 1)
+    if kwartaal == 4:
+        volgende_start = datetime(start.year + 1, 1, 1)
+    else:
+        volgende_start = datetime(start.year, kwartaal_start.month + 3, 1)
+    kwartaal_eind = volgende_start - timedelta(days=1)
+    if start == kwartaal_start and kwartaal_eind <= eind <= kwartaal_eind + timedelta(days=7):
+        return kwartaal_start, kwartaal_eind
+    return None
+
+
 def is_prive(transactie: dict, config: dict) -> bool:
     tegenrekening = transactie["tegenrekening"].replace(" ", "").upper()
     if tegenrekening and tegenrekening in config["eigen_rekeningen"]:
@@ -244,24 +274,39 @@ class Boekhouding:
         self.overrides = overrides or {}
         self.map_pad = map_pad or programma_map()
         self.geldige_jaarmaanden = bepaal_geldige_jaarmaanden(bestandsnaam or "")
+        self.kwartaal_venster = bepaal_kwartaal_venster(bestandsnaam or "")
         self.nieuwe_leveranciers = 0
         self.bereken()
+
+    def _binnen_kwartaal(self, t) -> bool:
+        if self.kwartaal_venster is None:
+            return True
+        start, eind = self.kwartaal_venster
+        return start <= t["datum"] <= eind
 
     def bereken(self):
         config, geheugen = self.config, self.geheugen
         aliassen = config["leverancier_aliassen"]
 
-        self.aantal_prive = sum(1 for t in self.ruwe if is_prive(t, config))
+        # Boekingen buiten het herkende kwartaal (meestal de eerste dagen van het volgende
+        # kwartaal die ING nog meeneemt) tellen nergens mee; ze horen in de volgende aangifte.
+        self.buiten_kwartaal = [
+            {**t, "tx_id": tx_id(t), "factuur": bepaal_omschrijving_tekst(t["mededelingen"])}
+            for t in self.ruwe if not self._binnen_kwartaal(t)
+        ]
+        binnen = [t for t in self.ruwe if self._binnen_kwartaal(t)]
+
+        self.aantal_prive = sum(1 for t in binnen if is_prive(t, config))
         self.aantal_belastingdienst = sum(
-            1 for t in self.ruwe if not is_prive(t, config) and is_belastingdienst(t)
+            1 for t in binnen if not is_prive(t, config) and is_belastingdienst(t)
         )
         self.aantal_uitgesloten = sum(
-            1 for t in self.ruwe
+            1 for t in binnen
             if not is_prive(t, config) and not is_belastingdienst(t)
             and is_uitgesloten(t, config) and not self._override_richting(t)
         )
         overig = [
-            t for t in self.ruwe
+            t for t in binnen
             if not is_prive(t, config) and not is_belastingdienst(t)
             and not (is_uitgesloten(t, config) and not self._override_richting(t))
         ]
@@ -278,6 +323,12 @@ class Boekhouding:
 
             if ovr.get("richting"):  # handmatige richting-correctie wint
                 richting, buiten_jaarmaand = ovr["richting"], None
+                # Het teken volgt de geldstroom: geld dat BINNENKWAM maar als uitgave wordt
+                # geboekt is een creditnota (negatieve kosten); geld dat WEGGING maar als
+                # inkomst wordt geboekt is een terugbetaling aan een klant (negatieve omzet).
+                is_krediet = (richting == "uitgave" and t["af_bij"] == "Bij") or (
+                    richting == "inkomst" and t["af_bij"] == "Af"
+                )
             if richting is None:
                 self.aantal_geen_factuur += 1
                 niet_ingedeeld.append({
@@ -375,6 +426,7 @@ class Boekhouding:
             "aantal_geen_factuur": self.aantal_geen_factuur,
             "aantal_kredietfactuur": self.aantal_kredietfactuur,
             "aantal_buiten_periode": len(self.buiten_periode),
+            "aantal_buiten_kwartaal": len(self.buiten_kwartaal),
             "aantal_investeringen": sum(1 for t in self.transacties if t.get("is_investering")),
             "aantal_verlegd": sum(1 for t in self.transacties if t.get("is_verlegd")),
             "nieuwe_leveranciers": self.nieuwe_leveranciers,

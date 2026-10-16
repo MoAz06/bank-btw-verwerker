@@ -4,9 +4,7 @@
 Gebruik:
     python ing_btw_verwerker.py <ing_export.csv> [output.xlsx]
 """
-import csv
 import itertools
-import json
 import statistics
 import sys
 from datetime import datetime
@@ -19,23 +17,18 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-import re
-
 from berekening import (
     KOR_GRENS,
     MAAND_NAMEN,
-    STANDAARD_BTW,
     bepaal_aangifte_info,
-    bepaal_btw,
+    bepaal_rubrieken,
     excl_van,
     totalen_per_richting,
 )
 from leveranciers import schrijf_leveranciers_geheugen
 from boekhouding import (
-    DEFAULT_CONFIG,
     Boekhouding,
     bereken_model,
-    laad_config,
     programma_map,
 )
 
@@ -169,8 +162,9 @@ def bouw_transacties_sheet(wb: Workbook, transacties: list):
     return ws
 
 
-def bouw_overzicht_sheet(wb: Workbook, buiten_periode: list, totalen: dict):
+def bouw_overzicht_sheet(wb: Workbook, buiten_periode: list, totalen: dict, buiten_kwartaal: list = None):
     ws = wb.create_sheet("Overzicht")
+    buiten_kwartaal = buiten_kwartaal or []
 
     def banner(rij, tekst, kleur, kolommen=2, grootte=14):
         ws.merge_cells(start_row=rij, start_column=1, end_row=rij, end_column=kolommen)
@@ -246,28 +240,45 @@ def bouw_overzicht_sheet(wb: Workbook, buiten_periode: list, totalen: dict):
     ws.column_dimensions["D"].width = 14
     ws.column_dimensions["E"].width = 18
 
-    if buiten_periode:
-        start_rij = 22
-        ws.merge_cells(start_row=start_rij, start_column=1, end_row=start_rij, end_column=5)
-        banner_cel = ws.cell(row=start_rij, column=1, value="LET OP - FACTUUR BUITEN PERIODE VAN DIT BESTAND")
+    rij = 22
+
+    def waarschuwing_banner(tekst):
+        nonlocal rij
+        ws.merge_cells(start_row=rij, start_column=1, end_row=rij, end_column=5)
+        banner_cel = ws.cell(row=rij, column=1, value=tekst)
         banner_cel.font = Font(bold=True, color="FFFFFF", size=12)
         banner_cel.fill = PatternFill("solid", start_color=KLEUR_WAARSCHUWING_BG, end_color=KLEUR_WAARSCHUWING_BG)
         banner_cel.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[start_rij].height = 20
+        ws.row_dimensions[rij].height = 20
+        rij += 1
 
-        rij = start_rij + 1
+    def tekst_regel(tekst):
+        nonlocal rij
+        ws.merge_cells(start_row=rij, start_column=1, end_row=rij, end_column=5)
+        cel = ws.cell(row=rij, column=1, value=tekst)
+        cel.alignment = Alignment(horizontal="left")
+        ws.row_dimensions[rij].height = 16
+        rij += 1
+
+    if buiten_kwartaal:
+        waarschuwing_banner("NIET MEEGETELD - BOEKINGEN NA HET KWARTAALEINDE (HOREN IN DE VOLGENDE AANGIFTE)")
+        for tx in sorted(buiten_kwartaal, key=lambda t: t["datum"]):
+            bedrag = -tx["bedrag"] if tx["af_bij"] == "Af" else tx["bedrag"]
+            tekst_regel(
+                f"{tx['datum'].strftime('%d-%m-%Y')}   {tx['naam']}   "
+                f"{'Af' if tx['af_bij'] == 'Af' else 'Bij'}: {_formateer_euro(bedrag)}"
+            )
+        rij += 1
+
+    if buiten_periode:
+        waarschuwing_banner("LET OP - FACTUUR BUITEN PERIODE VAN DIT BESTAND")
         for tx in sorted(buiten_periode, key=lambda t: t["datum"]):
             jaar, maand = tx["buiten_jaarmaand"]
-            ws.merge_cells(start_row=rij, start_column=1, end_row=rij, end_column=5)
-            tekst = (
+            tekst_regel(
                 f"{tx['datum'].strftime('%d-%m-%Y')}   {tx['naam']}   "
                 f"Factuur: {tx['factuur']}  ({MAAND_NAMEN[maand - 1]} {jaar})   "
                 f"Bedrag: {_formateer_euro(tx['bedrag'])}"
             )
-            cel = ws.cell(row=rij, column=1, value=tekst)
-            cel.alignment = Alignment(horizontal="left")
-            ws.row_dimensions[rij].height = 16
-            rij += 1
 
     return ws
 
@@ -493,21 +504,13 @@ def bouw_aangifte_sheet(wb: Workbook, aangifte: dict, totalen: dict, transacties
     getoond (fiscaal maatwerk).
     """
     ws = wb.create_sheet("BTW-aangifte")
-    vv_excl = aangifte["verlegd_verkoop_excl"]
-    vi_excl = aangifte["verlegd_inkoop_excl"]
-    vi_btw = round(vi_excl * STANDAARD_BTW / 100, 2)
-
-    # Vooraf uitgerekende rubriek-waarden (was: SUMIFS/Overzicht-formules).
-    omzet_1a = round(sum(
-        _excl_van(t.get("bedrag_effect", t["bedrag"]), t["btw_pct"])
-        for t in transacties if t["richting"] == "inkomst" and t["btw_pct"] == 21
-    ), 2)
-    btw_1a = totalen["inkomsten_btw"]
-    overige_excl = round(totalen["inkomsten_excl"] - omzet_1a - vv_excl, 2)
-    heeft_4b = vi_excl > 0
-    btw_5a = round(btw_1a + (vi_btw if heeft_4b else 0), 2)
-    btw_5b = round(totalen["uitgaven_btw"] + (vi_btw if vi_btw else 0), 2)
-    btw_5c = round(btw_5a - btw_5b, 2)
+    # Dezelfde afleiding als de app-tab (berekening.bepaal_rubrieken): vooraf uitgerekende
+    # waarden, geen formules.
+    rub = bepaal_rubrieken(transacties)
+    vv_excl = rub["verlegd_verkoop_excl"]
+    vi_excl = rub["verlegd_inkoop_excl"]
+    vi_btw = rub["verlegd_inkoop_btw"]
+    btw_5a, btw_5b, btw_5c = rub["btw_5a"], rub["btw_5b"], rub["btw_5c"]
     deadline_tekst = aangifte["deadline_tekst"]
     deadline_is_controle = deadline_tekst.lower().startswith("controleer")
 
@@ -554,18 +557,18 @@ def bouw_aangifte_sheet(wb: Workbook, aangifte: dict, totalen: dict, transacties
         rij += 1
         return huidige
 
-    # 1a omzet = alleen de 21%-belaste inkomsten; 1a btw = totale inkomsten-btw
-    # (0%-inkomsten dragen 0 btw bij, dus dit is exact de 21%-btw).
-    rij_1a = rubriek("1a  Leveringen/diensten belast met 21%", omzet_1a, btw_1a)
-    if vv_excl > 0:
+    rubriek("1a  Leveringen/diensten belast met 21%", rub["omzet_1a"], rub["btw_1a"])
+    if rub["heeft_1b"]:
+        rubriek("1b  Leveringen/diensten belast met 9%", rub["omzet_1b"], rub["btw_1b"])
+    if rub["heeft_1e"]:
         rubriek("1e  Omzet waarbij btw naar afnemer is verlegd (0%)", vv_excl, 0)
-    if aangifte.get("overige_omzet_excl", 0) > 0:
-        rubriek("Overige omzet 0% / anders (controleer rubriek)", overige_excl, 0)
-    if heeft_4b:
+    if rub["heeft_overige"]:
+        rubriek("Overige omzet 0% / anders (controleer rubriek)", rub["overige_excl"], rub["overige_btw"])
+    if rub["heeft_4b"]:
         rubriek("4b  Btw naar mij verlegd (inkoop onderaanneming)", vi_excl, vi_btw)
 
-    rij_5a = rubriek("5a  Verschuldigde omzetbelasting", None, btw_5a, vet=True)
-    rij_5b = rubriek("5b  Voorbelasting (terug te vragen)", None, btw_5b, vet=True)
+    rubriek("5a  Verschuldigde omzetbelasting", None, btw_5a, vet=True)
+    rubriek("5b  Voorbelasting (terug te vragen)", None, btw_5b, vet=True)
     rij_5c = rubriek("5c  Te betalen (+) / terug te vragen (-)", None, btw_5c, vet=True)
 
     ws.conditional_formatting.add(
@@ -579,7 +582,7 @@ def bouw_aangifte_sheet(wb: Workbook, aangifte: dict, totalen: dict, transacties
                    fill=PatternFill("solid", start_color=KLEUR_GOED_BG, end_color=KLEUR_GOED_BG),
                    font=Font(color=KLEUR_GOED_FONT, bold=True)))
 
-    if vv_excl > 0 or vi_excl > 0:
+    if rub["heeft_1e"] or rub["heeft_4b"]:
         ws.cell(row=rij + 1, column=1, value=(
             "Let op: verlegde btw is fiscaal maatwerk — controleer 1e/4b met je boekhouder."
         )).font = Font(italic=True, color=KLEUR_SLECHT_FONT)
@@ -760,13 +763,14 @@ def bouw_leveranciers_sheet(wb: Workbook, uitgaven: list):
     return ws
 
 
-def bouw_workbook(transacties: list, buiten_periode: list, aangifte: dict, config: dict) -> Workbook:
+def bouw_workbook(transacties: list, buiten_periode: list, aangifte: dict, config: dict,
+                  buiten_kwartaal: list = None) -> Workbook:
     wb = Workbook()
     # Vaste momentopname: alle bedragen staan als uitgerekende waarden in de cellen
     # (geen Excel-formules). Bewerken doe je in de app, niet in de Excel.
     totalen = _totalen(transacties)
     bouw_transacties_sheet(wb, transacties)
-    bouw_overzicht_sheet(wb, buiten_periode, totalen)
+    bouw_overzicht_sheet(wb, buiten_periode, totalen, buiten_kwartaal)
     bouw_aangifte_sheet(wb, aangifte, totalen, transacties)
     uitgaven = [t for t in transacties if t["richting"] == "uitgave"]
     inkomsten = [t for t in transacties if t["richting"] == "inkomst"]
@@ -781,7 +785,8 @@ def bouw_workbook(transacties: list, buiten_periode: list, aangifte: dict, confi
 def exporteer_excel(model: Boekhouding, output_pad: Path, aangifte_override: dict = None) -> Workbook:
     """Bouwt de Excel uit het model (pure consument) en slaat 'm op."""
     aangifte = aangifte_override if aangifte_override is not None else model.aangifte
-    wb = bouw_workbook(model.transacties, model.buiten_periode, aangifte, model.config)
+    wb = bouw_workbook(model.transacties, model.buiten_periode, aangifte, model.config,
+                       buiten_kwartaal=getattr(model, "buiten_kwartaal", None))
     wb.save(output_pad)
     return wb
 

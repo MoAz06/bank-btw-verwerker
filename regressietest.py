@@ -74,7 +74,7 @@ def snapshot(csv_pad: Path) -> dict:
 
 
 def _config():
-    from ing_btw_verwerker import laad_config
+    from boekhouding import laad_config
     return laad_config(programma_map())
 
 

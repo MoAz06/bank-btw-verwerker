@@ -49,6 +49,15 @@ Bewust ontkoppeld zodat de cijfers in de app en in de Excel per definitie gelijk
 
 Overige modules: `leveranciers.py` (naam-normalisatie + btw-geheugen per leverancier), `bonnen_matcher.py` (OCR + matching), `boekhoud_export.py` (kale import-csv voor de boekhouder), `gui.py` (OUDE tkinter-stoplicht-GUI, nog aanwezig als terugval, niet meer de hoofdweg).
 
+### Kwartaalvenster (in `Boekhouding.bereken`)
+`bepaal_kwartaal_venster(bestandsnaam)` herkent een volledig kwartaal (export start op dag 1, eindigt op of max. 7 dagen na het kwartaaleinde). Boekingen met een boekdatum buiten dat venster komen in `model.buiten_kwartaal` en tellen nergens mee (app: Overzicht-tab "Na het kwartaaleinde", Excel: blok op het Overzicht-blad). Zonder herkend kwartaal telt alles mee. Reden: de ING-export loopt een paar dagen door en de volgende export bevat dezelfde regels, anders tel je ze dubbel. Er wordt consequent op boekdatum gewerkt.
+
+### Richting-override en teken
+Bij een handmatige richting volgt het teken de geldstroom: een "Bij"-regel als uitgave = creditnota (negatieve kosten), een "Af"-regel als inkomst = terugbetaling (negatieve omzet). Beide krijgen `is_kredietfactuur=True`.
+
+### Aangifte-rubrieken
+`berekening.bepaal_rubrieken(transacties)` is de ENE afleiding van 1a/1b/1e/4b/5a/5b/5c voor zowel `webmodel._aangifte_dict` als `bouw_aangifte_sheet`. 9%-omzet staat in 1b; 5a = alle inkomsten-btw + 4b-btw; 4b wordt ook bij een negatief (creditnota) bedrag getoond en in 5a én 5b meegenomen.
+
 ### Btw-precedentie (in `Boekhouding.bereken`)
 `override (overrides.json) > verlegde btw > automatische 0% (config) > onthouden keuze (leveranciers.json) > standaard 21%`. Een handmatige btw-override zet `is_verlegd=False` en `btw_bron="override"`.
 
@@ -86,7 +95,7 @@ Regressie (vergelijkt door-Python-berekende cijfers met de golden in `_golden/`,
 ```
 py -3 regressietest.py check "NL68INGB0675668204_01-04-2026_04-07-2026.csv"
 ```
-Verwacht: Q2 116 tx, winst 1346.19, saldo -5978.07 (bevestigd op Python 3.13, 17-10-2026). Q1 (120 tx, winst 62147.13, saldo 3819.36) kan pas weer als de Q1-csv terug is.
+Verwacht: Q2 112 tx, winst 2206.37, saldo -5797.44 (herijkt 17-10-2026 nadat boekingen na het kwartaaleinde buiten de aangifte zijn gezet; daarvoor was het 116 tx, winst 1346.19, saldo -5978.07). De Q1-golden in `_golden/` is van vóór die wijziging en kan pas worden herijkt als de Q1-csv terug is.
 
 **Let op:** de regressietest verwijdert `leveranciers.json` in de projectmap (voor een schone run). Bestaat dat bestand met echte keuzes, maak dan eerst een kopie. Bij bewuste logica-wijziging herijk je met `regressietest.py opslaan ...`.
 

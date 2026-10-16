@@ -382,6 +382,17 @@ function maakActies(d) {
       doel: "buiten-periode-lijst",
     });
   }
+  const buitenKwartaal = d.buiten_kwartaal || [];
+  if (buitenKwartaal.length) {
+    acties.push({
+      niveau: "neutraal",
+      titel: `${buitenKwartaal.length} ${buitenKwartaal.length === 1 ? "boeking valt" : "boekingen vallen"} na het kwartaaleinde`,
+      context: "Niet meegeteld; deze gaan mee in de aangifte van het volgende kwartaal.",
+      actie: "Bekijken",
+      tab: "overzicht",
+      doel: "buiten-kwartaal-lijst",
+    });
+  }
   if (!bonnenData) {
     acties.push({
       niveau: "neutraal",
@@ -523,6 +534,27 @@ function paneelOverzicht(d) {
       ),
     ]));
   }
+  const buitenKwartaal = d.buiten_kwartaal || [];
+  if (buitenKwartaal.length) {
+    kinderen.push(el("section", {
+      class: "overzicht-detail", id: "buiten-kwartaal-lijst", tabindex: "-1",
+      "aria-labelledby": "buiten-kwartaal-titel",
+    }, [
+      el("div", { class: "sectie-kop" }, [
+        el("h3", { id: "buiten-kwartaal-titel", text: "Na het kwartaaleinde" }),
+        el("p", { text: "Het bankbestand loopt een paar dagen door in het volgende kwartaal. Deze boekingen tellen hier niet mee; ze horen in de volgende aangifte." }),
+      ]),
+      bouwTabel(
+        [
+          { key: "datum", label: "Datum", render: datum },
+          { key: "naam", label: "Naam" },
+          { key: "factuur", label: "Omschrijving" },
+          { key: "bedrag", label: "Bedrag", getal: true, render: geld },
+        ],
+        buitenKwartaal
+      ),
+    ]));
+  }
   return el("div", { class: "overzicht-paneel" }, kinderen);
 }
 
@@ -540,8 +572,9 @@ function paneelAangifte(d) {
   const rubrieken = [
     { label: "1a  Leveringen/diensten belast met 21%", omzet: a.omzet_1a, btw: a.btw_1a },
   ];
+  if (a.heeft_1b) rubrieken.push({ label: "1b  Leveringen/diensten belast met 9%", omzet: a.omzet_1b, btw: a.btw_1b });
   if (a.heeft_1e) rubrieken.push({ label: "1e  Omzet met btw verlegd naar afnemer (0%)", omzet: a.verlegd_verkoop_excl, btw: 0 });
-  if (a.overige_omzet_excl > 0) rubrieken.push({ label: "Overige omzet 0% / anders (controleer)", omzet: a.overige_excl, btw: 0 });
+  if (a.heeft_overige) rubrieken.push({ label: "Overige omzet 0% / anders (controleer)", omzet: a.overige_excl, btw: a.overige_btw || 0 });
   if (a.heeft_4b) rubrieken.push({ label: "4b  Btw naar mij verlegd (inkoop onderaanneming)", omzet: a.verlegd_inkoop_excl, btw: a.verlegd_inkoop_btw });
   rubrieken.push({ label: "5a  Verschuldigde omzetbelasting", omzet: null, btw: a.btw_5a, vet: true });
   rubrieken.push({ label: "5b  Voorbelasting (terug te vragen)", omzet: null, btw: a.btw_5b, vet: true });
@@ -982,6 +1015,7 @@ function toonImportReview(data) {
   document.getElementById("import-uitgesloten-detail").textContent = data.tellingen.uitgesloten;
   document.getElementById("import-niet-ingedeeld").textContent = (data.niet_ingedeeld || []).length;
   document.getElementById("import-buiten-periode").textContent = data.buiten_periode.length;
+  document.getElementById("import-buiten-kwartaal").textContent = (data.buiten_kwartaal || []).length;
   const statusBlok = document.getElementById("import-status");
   const statusTekst = document.getElementById("import-status-tekst");
   statusBlok.classList.toggle("-waarschuwing", !p.volledig_kwartaal);

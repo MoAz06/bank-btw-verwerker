@@ -71,6 +71,60 @@ def bepaal_btw(transactie: dict, leverancier: str, config: dict, geheugen: dict)
     return STANDAARD_BTW, "standaard", False, False
 
 
+def bepaal_rubrieken(transacties: list) -> dict:
+    """De aangifte-rubrieken (1a, 1b, 1e, 4b, 5a, 5b, 5c) als kale getallen.
+
+    De ENE afleiding die zowel de app-tab als de Excel-tab gebruiken, zodat die nooit
+    uiteen kunnen lopen. Alles op basis van bedrag_effect (kredietfacturen negatief).
+    """
+    tot = totalen_per_richting(transacties)
+
+    def incl(t):
+        return t.get("bedrag_effect", t["bedrag"])
+
+    def excl(t):
+        return excl_van(incl(t), t["btw_pct"])
+
+    inkomsten = [t for t in transacties if t["richting"] == "inkomst"]
+    uitgaven = [t for t in transacties if t["richting"] == "uitgave"]
+    gewoon = [t for t in inkomsten if not t.get("is_verlegd")]
+
+    omzet_1a = round(sum(excl(t) for t in gewoon if t["btw_pct"] == 21), 2)
+    btw_1a = round(sum(incl(t) - excl(t) for t in gewoon if t["btw_pct"] == 21), 2)
+    omzet_1b = round(sum(excl(t) for t in gewoon if t["btw_pct"] == 9), 2)
+    btw_1b = round(sum(incl(t) - excl(t) for t in gewoon if t["btw_pct"] == 9), 2)
+    verlegd_verkoop_excl = round(sum(excl(t) for t in inkomsten if t.get("is_verlegd")), 2)
+    verlegd_inkoop_excl = round(sum(excl(t) for t in uitgaven if t.get("is_verlegd")), 2)
+    # Verlegde inkoop: je geeft de btw aan in 4b en trekt 'm in 5b meteen weer af.
+    verlegd_inkoop_btw = round(verlegd_inkoop_excl * STANDAARD_BTW / 100, 2)
+    # Rest van de omzet (0% of een afwijkend tarief) incl. de btw die daar eventueel op zit.
+    overige_excl = round(tot["inkomsten_excl"] - omzet_1a - omzet_1b - verlegd_verkoop_excl, 2)
+    overige_btw = round(tot["inkomsten_btw"] - btw_1a - btw_1b, 2)
+
+    btw_5a = round(tot["inkomsten_btw"] + verlegd_inkoop_btw, 2)
+    btw_5b = round(tot["uitgaven_btw"] + verlegd_inkoop_btw, 2)
+    btw_5c = round(btw_5a - btw_5b, 2)
+    return {
+        "omzet_1a": omzet_1a,
+        "btw_1a": btw_1a,
+        "omzet_1b": omzet_1b,
+        "btw_1b": btw_1b,
+        "heeft_1b": omzet_1b != 0 or btw_1b != 0,
+        "verlegd_verkoop_excl": verlegd_verkoop_excl,
+        "heeft_1e": verlegd_verkoop_excl != 0,
+        "overige_excl": overige_excl,
+        "overige_btw": overige_btw,
+        "heeft_overige": overige_excl != 0 or overige_btw != 0,
+        "verlegd_inkoop_excl": verlegd_inkoop_excl,
+        "verlegd_inkoop_btw": verlegd_inkoop_btw,
+        "heeft_4b": verlegd_inkoop_excl != 0,
+        "btw_5a": btw_5a,
+        "btw_5b": btw_5b,
+        "btw_5c": btw_5c,
+        "reserveren": round(max(0.0, btw_5c), 2),
+    }
+
+
 def bepaal_aangifte_info(verwerkt: list, config: dict) -> dict:
     """Alle geaggregeerde aangifte-cijfers uit de verwerkte transacties."""
     inkomsten = [t for t in verwerkt if t["richting"] == "inkomst"]

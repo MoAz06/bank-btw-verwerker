@@ -41,7 +41,10 @@ def schrijf_export(transacties: list, pad: Path):
             noemer = 1 + tx["btw_pct"] / 100
             excl = bedrag / noemer if noemer else bedrag
             btw_bedrag = bedrag - excl
-            soort = "Inkomst" if tx["richting"] == "inkomst" else ("Creditnota" if tx.get("is_kredietfactuur") else "Uitgave")
+            if tx.get("is_kredietfactuur"):
+                soort = "Creditnota"  # negatief bedrag: terugontvangen kosten of terugbetaalde omzet
+            else:
+                soort = "Inkomst" if tx["richting"] == "inkomst" else "Uitgave"
             schrijver.writerow([
                 tx["datum"].strftime("%d-%m-%Y"),
                 soort,

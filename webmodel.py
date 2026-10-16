@@ -11,7 +11,8 @@ import statistics
 from calendar import monthrange
 from datetime import date, timedelta
 
-from berekening import excl_van, totalen_per_richting
+from berekening import bepaal_rubrieken, excl_van, totalen_per_richting
+from boekhouding import bepaal_kwartaal_venster
 
 
 def _iso(d):
@@ -115,13 +116,14 @@ def _periode_dict(model) -> dict:
         volgende_start = date(start.year, kwartaal_start.month + 3, 1)
     kwartaal_eind = volgende_start - timedelta(days=1)
 
-    # ING-exports lopen in de praktijk soms enkele dagen door. Accepteer maximaal
-    # één week na het kwartaaleinde, maar alleen als de export exact op dag 1 start.
-    volledig_kwartaal = (
-        bron_herkend
-        and start == kwartaal_start
-        and kwartaal_eind <= eind <= kwartaal_eind + timedelta(days=7)
-    )
+    # Dezelfde regel als het model gebruikt om boekingen na het kwartaaleinde apart te
+    # zetten (boekhouding.bepaal_kwartaal_venster), zodat label en cijfers altijd kloppen.
+    venster = bepaal_kwartaal_venster(model.bestandsnaam or "") if bron_herkend else None
+    volledig_kwartaal = venster is not None
+    if volledig_kwartaal:
+        kwartaal_start, kwartaal_eind = venster[0].date(), venster[1].date()
+        kwartaal = (kwartaal_start.month - 1) // 3 + 1
+        volgende_start = kwartaal_eind + timedelta(days=1)
     deadline = None
     kwartaal_label = None
     if volledig_kwartaal:
@@ -153,23 +155,10 @@ def _periode_dict(model) -> dict:
 def _aangifte_dict(model, periode: dict) -> dict:
     """Aangifte-rubrieken als kale getallen (zelfde afleiding als de Excel-tab)."""
     a = model.aangifte
-    tot = totalen_per_richting(model.transacties)
-    vv_excl = a["verlegd_verkoop_excl"]
-    vi_excl = a["verlegd_inkoop_excl"]
-    vi_btw = round(vi_excl * 21 / 100, 2)
-
-    omzet_1a = round(sum(
-        excl_van(t.get("bedrag_effect", t["bedrag"]), t["btw_pct"])
-        for t in model.transacties if t["richting"] == "inkomst" and t["btw_pct"] == 21
-    ), 2)
-    btw_1a = tot["inkomsten_btw"]
-    overige_excl = round(tot["inkomsten_excl"] - omzet_1a - vv_excl, 2)
-    heeft_4b = vi_excl > 0
-    btw_5a = round(btw_1a + (vi_btw if heeft_4b else 0), 2)
-    btw_5b = round(tot["uitgaven_btw"] + vi_btw, 2)
-    btw_5c = round(btw_5a - btw_5b, 2)
+    rubrieken = bepaal_rubrieken(model.transacties)
 
     return {
+        **rubrieken,
         "kor_actief": a["kor_actief"],
         "periode_tekst": (
             "Periode "
@@ -184,19 +173,6 @@ def _aangifte_dict(model, periode: dict) -> dict:
         ),
         "deadline_betrouwbaar": bool(periode["deadline"]),
         "jaaromzet_tot_nu": round(a["jaaromzet_tot_nu"], 2),
-        "verlegd_verkoop_excl": vv_excl,
-        "verlegd_inkoop_excl": vi_excl,
-        "verlegd_inkoop_btw": vi_btw,
-        "overige_omzet_excl": a.get("overige_omzet_excl", 0),
-        "omzet_1a": omzet_1a,
-        "btw_1a": btw_1a,
-        "overige_excl": overige_excl,
-        "heeft_1e": vv_excl > 0,
-        "heeft_4b": heeft_4b,
-        "btw_5a": btw_5a,
-        "btw_5b": btw_5b,
-        "btw_5c": btw_5c,
-        "reserveren": round(max(0.0, btw_5c), 2),
     }
 
 
@@ -276,6 +252,15 @@ def model_naar_dict(model) -> dict:
         "jaarmaand": list(t["buiten_jaarmaand"]),
     } for t in sorted(model.buiten_periode, key=lambda t: t["datum"])]
 
+    buiten_kwartaal = [{
+        "id": t.get("tx_id"),
+        "datum": _iso(t["datum"]),
+        "naam": t["naam"],
+        "factuur": t.get("factuur", ""),
+        "af_bij": t["af_bij"],
+        "bedrag": round(-t["bedrag"] if t["af_bij"] == "Af" else t["bedrag"], 2),
+    } for t in sorted(model.buiten_kwartaal, key=lambda t: t["datum"])]
+
     niet_ingedeeld = [{
         "id": t.get("tx_id"),
         "datum": _iso(t["datum"]),
@@ -290,6 +275,7 @@ def model_naar_dict(model) -> dict:
     periode = _periode_dict(model)
     buiten_beschouwing = (
         r["aantal_prive"] + r["aantal_belastingdienst"] + r["aantal_uitgesloten"]
+        + r["aantal_buiten_kwartaal"]
     )
     aandachtspunten = (
         len(niet_ingedeeld) + len(buiten) + (0 if periode["volledig_kwartaal"] else 1)
@@ -316,6 +302,7 @@ def model_naar_dict(model) -> dict:
         "btw_saldo": round(tot["inkomsten_btw"] - tot["uitgaven_btw"], 2),
         "aangifte": _aangifte_dict(model, periode),
         "buiten_periode": buiten,
+        "buiten_kwartaal": buiten_kwartaal,
         "tellingen": {
             "verwerkt": r["aantal_verwerkt"],
             "prive": r["aantal_prive"],
@@ -324,6 +311,7 @@ def model_naar_dict(model) -> dict:
             "geen_factuur": r["aantal_geen_factuur"],
             "kredietfactuur": r["aantal_kredietfactuur"],
             "buiten_periode": r["aantal_buiten_periode"],
+            "buiten_kwartaal": r["aantal_buiten_kwartaal"],
             "investeringen": r["aantal_investeringen"],
             "verlegd": r["aantal_verlegd"],
         },
