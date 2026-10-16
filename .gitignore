@@ -6,11 +6,20 @@
 # Lokale, persoonlijke configuratie en geheugen (bevat IBANs / btw-keuzes)
 config.json
 leveranciers.json
+overrides.json
+
+# Gouden regressie-referentie (bevat echte transactiedata)
+_golden/
+
+# Lokale preview met echte data (herbouwd uit scratchpad-script)
+webui/_preview.html
 
 # Build-artefacten (te herbouwen uit de source)
 __pycache__/
 *.pyc
 build/
 dist/
+# de build-spec hoort wel in git (reproduceerbare exe), andere .spec niet
 *.spec
+!bank_btw_app.spec
 *.exe

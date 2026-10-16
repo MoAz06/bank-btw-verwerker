@@ -1,3 +1,6 @@
+# App-venster (lokaal, via Windows WebView2 — geen internet nodig)
+pywebview
+
 # Kern (Excel + csv verwerking)
 openpyxl
 
