@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""Het datamodel: van ruwe bank-csv naar een in-memory Boekhouding.
+
+Dit is de ENE bron van waarheid. De Excel-export en (straks) de app-tabs lezen allebei
+uit ditzelfde model, zodat ze per definitie niet uiteen kunnen lopen. Geen openpyxl hier.
+"""
+import csv
+import hashlib
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from berekening import bepaal_aangifte_info, bepaal_btw, excl_van
+from leveranciers import (
+    laad_leveranciers_geheugen,
+    normaliseer_leverancier,
+    onthoud_btw,
+    schrijf_leveranciers_geheugen,
+    vul_geheugen_aan,
+)
+
+DEFAULT_CONFIG = {
+    "bedrijfsnaam": "",
+    "eigen_rekeningen": {"NL76INGB0003298592", "NL29RABO0366729276"},
+    "eigen_naam_patronen": ["zakelijke oranje spaarrekening"],
+    "nul_btw_patronen": [
+        "kosten zakelijk betalingsverkeer", "ontvangsten hiltermann l",
+        "flexkracht", "unive het groene hart bemiddeling", "vwpfs",
+    ],
+    "verlegd_patronen": [],
+    "uitsluit_patronen": ["lening", "aflossing"],
+    "investering_drempel": 450.0,
+    "geen_investering_leveranciers": [
+        "Wasco", "Technische Unie", "Bouwmaat", "Hornbach", "Toolstation",
+        "Proforto", "Sanitino", "De Ned. Afvalcontainer Centrale",
+        "Verploegen Verwarming", "Mollie Payments", "MultiSafepay", "Stripe", "PayPal",
+        "VWPFS (lease)", "Hiltermann Lease", "Travelcard", "KPN",
+        "Unive Het Groene Hart Bemiddeling B.V.", "Riverty (parkeren)",
+    ],
+    "leverancier_aliassen": {},
+    "kor_actief": False,
+    "jaaromzet_reeds": 0.0,
+    "boekhoud_export": True,
+}
+BELASTINGDIENST_PATROON = "belastingdienst"
+
+REQUIRED_COLUMNS = [
+    "Datum", "Naam / Omschrijving", "Rekening", "Tegenrekening",
+    "Code", "Af Bij", "Bedrag (EUR)", "Mutatiesoort", "Mededelingen",
+]
+
+FACTUUR_PATROON = re.compile(r"\b(\d{4})(0[1-9]|1[0-2])\d{2,6}\b")
+CIJFER_PATROON = re.compile(r"\d{2,}")
+_STOP_LABELS = r"(?:Naam:|Omschrijving:|IBAN:|Kenmerk:|Machtiging ID:|Incassant ID:|Datum/Tijd:|Valutadatum:)"
+OMSCHRIJVING_PATROON = re.compile(r"Omschrijving:\s*(.*?)\s*(?=" + _STOP_LABELS + r"|$)")
+BESTANDSNAAM_DATUM_PATROON = re.compile(r"(\d{2})-(\d{2})-(\d{4})_(\d{2})-(\d{2})-(\d{4})")
+
+
+# ---------- configuratie ----------
+def programma_map() -> Path:
+    """Map waar config.json / leveranciers.json horen te staan - naast de .exe of dit script."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def overrides_pad(map_pad: Path = None) -> Path:
+    """Bestand met handmatige correcties per transactie (btw%, richting, investering)."""
+    return (map_pad or programma_map()) / "overrides.json"
+
+
+def laad_overrides(map_pad: Path = None) -> dict:
+    """Retourneert {tx_id: {veld: waarde}}. Leeg dict als er nog niets gecorrigeerd is."""
+    pad = overrides_pad(map_pad)
+    if not pad.exists():
+        return {}
+    try:
+        with open(pad, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def schrijf_overrides(overrides: dict, map_pad: Path = None):
+    """Slaat de correcties op. Verwijdert het bestand als er geen correcties (meer) zijn."""
+    pad = overrides_pad(map_pad)
+    try:
+        if not overrides:
+            if pad.exists():
+                pad.unlink()
+            return
+        with open(pad, "w", encoding="utf-8") as f:
+            json.dump(overrides, f, ensure_ascii=False, indent=2, sort_keys=True)
+    except OSError:
+        pass
+
+
+def laad_config(script_dir: Path = None) -> dict:
+    script_dir = script_dir or programma_map()
+    pad = script_dir / "config.json"
+    if not pad.exists():
+        return DEFAULT_CONFIG
+    with open(pad, encoding="utf-8") as f:
+        data = json.load(f)
+    return {
+        "bedrijfsnaam": str(data.get("bedrijfsnaam", "") or "").strip(),
+        "eigen_rekeningen": {iban.replace(" ", "").upper() for iban in data.get("eigen_rekeningen", [])},
+        "eigen_naam_patronen": [p.lower() for p in data.get("eigen_naam_patronen", [])],
+        "nul_btw_patronen": [p.lower() for p in data.get("nul_btw_patronen", DEFAULT_CONFIG["nul_btw_patronen"])],
+        "verlegd_patronen": [p.lower() for p in data.get("verlegd_patronen", [])],
+        "uitsluit_patronen": [p.lower() for p in data.get("uitsluit_patronen", DEFAULT_CONFIG["uitsluit_patronen"])],
+        "investering_drempel": float(data.get("investering_drempel", DEFAULT_CONFIG["investering_drempel"])),
+        "geen_investering_leveranciers": data.get("geen_investering_leveranciers", DEFAULT_CONFIG["geen_investering_leveranciers"]),
+        "leverancier_aliassen": {k.lower(): v for k, v in data.get("leverancier_aliassen", {}).items()},
+        "kor_actief": bool(data.get("kor_actief", False)),
+        "jaaromzet_reeds": float(data.get("jaaromzet_reeds", 0.0)),
+        "boekhoud_export": bool(data.get("boekhoud_export", True)),
+    }
+
+
+# ---------- csv inlezen ----------
+def parse_bedrag(tekst: str) -> float:
+    return float(tekst.replace(".", "").replace(",", "."))
+
+
+def parse_datum(tekst: str) -> datetime:
+    return datetime.strptime(tekst, "%Y%m%d")
+
+
+def lees_csv(pad: Path) -> list:
+    with open(pad, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        ontbrekend = [c for c in REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
+        if ontbrekend:
+            raise SystemExit(
+                f"Dit lijkt geen ING csv-export: kolommen {ontbrekend} ontbreken.\n"
+                f"Gevonden kolommen: {reader.fieldnames}"
+            )
+        transacties = []
+        for i, rij in enumerate(reader, start=2):
+            try:
+                transacties.append({
+                    "datum": parse_datum(rij["Datum"]),
+                    "naam": rij["Naam / Omschrijving"].strip(),
+                    "tegenrekening": rij["Tegenrekening"].strip(),
+                    "af_bij": rij["Af Bij"].strip(),
+                    "bedrag": parse_bedrag(rij["Bedrag (EUR)"]),
+                    "mededelingen": rij["Mededelingen"].strip(),
+                })
+            except (ValueError, KeyError) as e:
+                print(f"Waarschuwing: rij {i} overgeslagen ({e})", file=sys.stderr)
+        return transacties
+
+
+def tx_id(t: dict) -> str:
+    """Stabiel id per transactie (datum+bedrag+tegenrekening+mededeling), voor overrides."""
+    sleutel = f"{t['datum'].strftime('%Y%m%d')}|{t['bedrag']:.2f}|{t['tegenrekening']}|{t['mededelingen']}"
+    return hashlib.sha1(sleutel.encode("utf-8")).hexdigest()[:12]
+
+
+# ---------- classificatie ----------
+def bepaal_geldige_jaarmaanden(bestandsnaam: str):
+    match = BESTANDSNAAM_DATUM_PATROON.search(bestandsnaam)
+    if not match:
+        return None
+    _, maand1, jaar1, _, maand2, jaar2 = match.groups()
+    start = (int(jaar1), int(maand1))
+    eind = (int(jaar2), int(maand2))
+    if eind < start:
+        start, eind = eind, start
+    geldig = set()
+    jaar, maand = start
+    while (jaar, maand) <= eind:
+        geldig.add((jaar, maand))
+        maand += 1
+        if maand > 12:
+            maand = 1
+            jaar += 1
+    return geldig
+
+
+def is_prive(transactie: dict, config: dict) -> bool:
+    tegenrekening = transactie["tegenrekening"].replace(" ", "").upper()
+    if tegenrekening and tegenrekening in config["eigen_rekeningen"]:
+        return True
+    naam_lower = transactie["naam"].lower()
+    return any(patroon in naam_lower for patroon in config["eigen_naam_patronen"])
+
+
+def is_belastingdienst(transactie: dict) -> bool:
+    return BELASTINGDIENST_PATROON in transactie["naam"].lower()
+
+
+def is_uitgesloten(transactie: dict, config: dict) -> bool:
+    """Leningen/aflossingen e.d. zijn geen kosten of omzet. Hele-woord-match."""
+    tekst = (transactie["naam"] + " " + transactie["mededelingen"]).lower()
+    for patroon in config.get("uitsluit_patronen", []):
+        if re.search(r"\b" + re.escape(patroon) + r"\b", tekst):
+            return True
+    return False
+
+
+def bepaal_omschrijving_tekst(mededelingen: str) -> str:
+    match = OMSCHRIJVING_PATROON.search(mededelingen)
+    return match.group(1) if match else ""
+
+
+def classificeer_richting(transactie: dict, omschrijving: str, geldige_jaarmaanden):
+    """(richting, is_kredietfactuur, buiten_periode_jaarmaand). richting: uitgave|inkomst|buiten_periode|None."""
+    if transactie["af_bij"] == "Af":
+        return "uitgave", False, None
+    buiten_periode = None
+    for match in FACTUUR_PATROON.finditer(omschrijving):
+        jaarmaand = (int(match.group(1)), int(match.group(2)))
+        if geldige_jaarmaanden is None or jaarmaand in geldige_jaarmaanden:
+            return "inkomst", False, None
+        if buiten_periode is None:
+            buiten_periode = jaarmaand
+    if buiten_periode is not None:
+        return "buiten_periode", False, buiten_periode
+    if CIJFER_PATROON.search(omschrijving):
+        return "uitgave", True, None
+    return None, False, None
+
+
+BTW_VELDEN = ("btw_pct", "richting", "is_investering", "uitgesloten")
+
+
+class Boekhouding:
+    """In-memory model: transacties + config + geheugen + handmatige overrides.
+
+    Roep bereken() aan na een wijziging; dat draait alle pure functies opnieuw over de
+    volledige lijst (ruim snel genoeg) zodat elke afgeleide waarde altijd klopt.
+    """
+
+    def __init__(self, ruwe_transacties, bestandsnaam, config, geheugen, overrides=None, map_pad=None):
+        self.ruwe = ruwe_transacties
+        self.bestandsnaam = bestandsnaam
+        self.config = config
+        self.geheugen = geheugen
+        self.overrides = overrides or {}
+        self.map_pad = map_pad or programma_map()
+        self.geldige_jaarmaanden = bepaal_geldige_jaarmaanden(bestandsnaam or "")
+        self.nieuwe_leveranciers = 0
+        self.bereken()
+
+    def bereken(self):
+        config, geheugen = self.config, self.geheugen
+        aliassen = config["leverancier_aliassen"]
+
+        self.aantal_prive = sum(1 for t in self.ruwe if is_prive(t, config))
+        self.aantal_belastingdienst = sum(
+            1 for t in self.ruwe if not is_prive(t, config) and is_belastingdienst(t)
+        )
+        self.aantal_uitgesloten = sum(
+            1 for t in self.ruwe
+            if not is_prive(t, config) and not is_belastingdienst(t)
+            and is_uitgesloten(t, config) and not self._override_richting(t)
+        )
+        overig = [
+            t for t in self.ruwe
+            if not is_prive(t, config) and not is_belastingdienst(t)
+            and not (is_uitgesloten(t, config) and not self._override_richting(t))
+        ]
+
+        verwerkt, buiten_periode, niet_ingedeeld = [], [], []
+        self.aantal_geen_factuur = 0
+        self.aantal_kredietfactuur = 0
+        self.nieuwe_leveranciers = 0
+        for t in overig:
+            tid = tx_id(t)
+            ovr = self.overrides.get(tid, {})
+            omschrijving = bepaal_omschrijving_tekst(t["mededelingen"])
+            richting, is_krediet, buiten_jaarmaand = classificeer_richting(t, omschrijving, self.geldige_jaarmaanden)
+
+            if ovr.get("richting"):  # handmatige richting-correctie wint
+                richting, buiten_jaarmaand = ovr["richting"], None
+            if richting is None:
+                self.aantal_geen_factuur += 1
+                niet_ingedeeld.append({
+                    **t,
+                    "tx_id": tid,
+                    "factuur": omschrijving,
+                })
+                continue
+            if richting == "buiten_periode":
+                buiten_periode.append({**t, "tx_id": tid, "factuur": omschrijving, "buiten_jaarmaand": buiten_jaarmaand})
+                continue
+            if is_krediet:
+                self.aantal_kredietfactuur += 1
+
+            leverancier = normaliseer_leverancier(t["naam"], aliassen)
+            btw_pct, btw_bron, is_verlegd, is_auto_nul = bepaal_btw(t, leverancier, config, geheugen)
+            if isinstance(ovr.get("btw_pct"), (int, float)):  # handmatige btw-correctie wint van alles
+                btw_pct, btw_bron, is_auto_nul = int(ovr["btw_pct"]), "override", int(ovr["btw_pct"]) == 0
+                is_verlegd = False
+            excl = excl_van(t["bedrag"], btw_pct)
+            is_investering = (
+                richting == "uitgave" and not is_krediet
+                and excl >= config["investering_drempel"]
+                and leverancier not in config.get("geen_investering_leveranciers", [])
+            )
+            if "is_investering" in ovr:
+                is_investering = bool(ovr["is_investering"])
+
+            verwerkt.append({
+                **t,
+                "tx_id": tid,
+                "richting": richting,
+                "is_kredietfactuur": is_krediet,
+                "factuur": omschrijving,
+                "leverancier": leverancier,
+                "btw_pct": btw_pct,
+                "btw_bron": btw_bron,
+                "btw_auto_nul": is_auto_nul,
+                "is_verlegd": is_verlegd,
+                "is_investering": is_investering,
+                "bedrag_effect": -t["bedrag"] if is_krediet else t["bedrag"],
+            })
+            if vul_geheugen_aan(geheugen, leverancier, btw_pct, richting == "uitgave"):
+                self.nieuwe_leveranciers += 1
+
+        self.transacties = verwerkt
+        self.buiten_periode = buiten_periode
+        self.niet_ingedeeld = niet_ingedeeld
+        self.aangifte = bepaal_aangifte_info(verwerkt, config)
+
+    def _override_richting(self, t):
+        return self.overrides.get(tx_id(t), {}).get("richting")
+
+    # ---- bewerken (Fase 4) ----
+    def zet_override(self, tid: str, veld: str, waarde, bewaar: bool = True):
+        if veld not in BTW_VELDEN:
+            raise ValueError(f"onbekend override-veld: {veld}")
+        self.overrides.setdefault(tid, {})[veld] = waarde
+        self.bereken()
+        if bewaar:
+            self.bewaar_overrides()
+
+    def wis_override(self, tid: str, veld: str = None, bewaar: bool = True):
+        """Wist één veld of (veld=None) de hele correctie voor deze transactie."""
+        if veld is None:
+            self.overrides.pop(tid, None)
+        elif tid in self.overrides:
+            self.overrides[tid].pop(veld, None)
+            if not self.overrides[tid]:
+                self.overrides.pop(tid, None)
+        self.bereken()
+        if bewaar:
+            self.bewaar_overrides()
+
+    def zet_btw(self, tid: str, btw_pct: int, onthoud_voor_leverancier: bool = False, bewaar: bool = True):
+        """Handmatige btw-correctie voor één transactie; optioneel onthouden voor de leverancier."""
+        if onthoud_voor_leverancier:
+            tx = next((t for t in self.transacties if t.get("tx_id") == tid), None)
+            if tx:
+                onthoud_btw(self.geheugen, tx["leverancier"], btw_pct)
+                schrijf_leveranciers_geheugen(self.map_pad, self.geheugen)
+        self.zet_override(tid, "btw_pct", int(btw_pct), bewaar=bewaar)
+
+    def bewaar_overrides(self):
+        schrijf_overrides(self.overrides, self.map_pad)
+
+    # ---- samenvatting voor GUI / compat ----
+    def resultaat(self) -> dict:
+        a = self.aangifte
+        return {
+            "aantal_verwerkt": len(self.transacties),
+            "aantal_prive": self.aantal_prive,
+            "aantal_belastingdienst": self.aantal_belastingdienst,
+            "aantal_uitgesloten": self.aantal_uitgesloten,
+            "aantal_geen_factuur": self.aantal_geen_factuur,
+            "aantal_kredietfactuur": self.aantal_kredietfactuur,
+            "aantal_buiten_periode": len(self.buiten_periode),
+            "aantal_investeringen": sum(1 for t in self.transacties if t.get("is_investering")),
+            "aantal_verlegd": sum(1 for t in self.transacties if t.get("is_verlegd")),
+            "nieuwe_leveranciers": self.nieuwe_leveranciers,
+            "geen_periode_gevonden": self.geldige_jaarmaanden is None,
+            "kor_actief": self.config["kor_actief"],
+            "winst": a["winst"],
+            "btw_saldo": a["btw_saldo"],
+            "btw_te_reserveren": a["btw_te_reserveren"],
+            "deadline_tekst": a["deadline_tekst"],
+            "transacties": self.transacties,
+            "buiten_periode": self.buiten_periode,
+            "aangifte": a,
+        }
+
+
+def bereken_model(csv_pad: Path, config: dict = None, geheugen: dict = None, overrides: dict = None) -> Boekhouding:
+    """Leest de csv en bouwt het model. Laadt config/geheugen/overrides zelf als je ze niet meegeeft."""
+    map_pad = programma_map()
+    config = config if config is not None else laad_config(map_pad)
+    geheugen = geheugen if geheugen is not None else laad_leveranciers_geheugen(map_pad)
+    overrides = overrides if overrides is not None else laad_overrides(map_pad)
+    ruwe = lees_csv(csv_pad)
+    if not ruwe:
+        raise SystemExit("Geen (geldige) transacties gevonden in dit bestand.")
+    return Boekhouding(ruwe, csv_pad.name, config, geheugen, overrides, map_pad=map_pad)

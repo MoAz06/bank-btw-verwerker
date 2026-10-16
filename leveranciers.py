@@ -124,3 +124,15 @@ def vul_geheugen_aan(geheugen: dict, leverancier: str, btw_pct: int, bon_verwach
         return False
     geheugen[leverancier] = {"btw": btw_pct, "bon_verwacht": bon_verwacht}
     return True
+
+
+def onthoud_btw(geheugen: dict, leverancier: str, btw_pct: int):
+    """Overschrijft de onthouden btw voor een leverancier (handmatige keuze wint).
+
+    Anders dan vul_geheugen_aan (die alleen gaten vult) legt dit een expliciete
+    correctie vast, zodat dezelfde leverancier voortaan dat tarief krijgt.
+    """
+    if not leverancier:
+        return
+    bestaand = geheugen.get(leverancier, {})
+    geheugen[leverancier] = {**bestaand, "btw": int(btw_pct)}
