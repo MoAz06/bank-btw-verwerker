@@ -124,6 +124,68 @@ class Api:
         except Exception:
             return {"ok": False, "fout": "Indelen mislukt.", "detail": traceback.format_exc()}
 
+    # ---- alles bewerkbaar: één generieke ingang ----
+    BEWERKBAAR = {"bedrag", "naam", "leverancier", "factuur", "btw_pct", "richting", "is_investering"}
+
+    @staticmethod
+    def _parse_bedrag(waarde):
+        """'1.234,56', '1234,56', '1234.56' of een getal -> float. ValueError bij onzin."""
+        if isinstance(waarde, (int, float)):
+            return float(waarde)
+        s = str(waarde).replace("€", "").replace(" ", "").replace(" ", "").strip().lstrip("+-")
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        elif s.count(".") == 1 and len(s.split(".")[1]) == 3:
+            s = s.replace(".", "")  # "1.234" is een duizendtal, geen decimaal
+        return float(s)
+
+    def zet_veld(self, tid, veld, waarde):
+        """Zet een handmatige correctie op één veld; het hele model rekent opnieuw door."""
+        if not self.model:
+            return {"ok": False, "fout": "Nog geen bestand geladen."}
+        if veld not in self.BEWERKBAAR:
+            return {"ok": False, "fout": "Dit veld is niet te bewerken."}
+        try:
+            if veld == "bedrag":
+                bedrag = self._parse_bedrag(waarde)
+                if not bedrag > 0:
+                    return {"ok": False, "fout": "Vul een bedrag groter dan 0 in."}
+                nieuw = round(bedrag, 2)
+            elif veld == "btw_pct":
+                nieuw = int(waarde)
+                if not 0 <= nieuw <= 100:
+                    return {"ok": False, "fout": "Btw moet tussen 0 en 100 procent liggen."}
+            elif veld == "richting":
+                if waarde not in {"inkomst", "uitgave"}:
+                    return {"ok": False, "fout": "Kies inkomsten of uitgaven."}
+                nieuw = waarde
+            elif veld == "is_investering":
+                nieuw = bool(waarde) if not isinstance(waarde, str) else waarde.lower() in {"1", "true", "ja"}
+            else:  # naam, leverancier, factuur
+                nieuw = str(waarde or "").strip()[:200]
+                if not nieuw:
+                    return self.herstel_veld(tid, veld)
+            self.model.zet_override(tid, veld, nieuw)
+            self.bonnen_analyse = None
+            return {"ok": True, "data": model_naar_dict(self.model)}
+        except ValueError:
+            return {"ok": False, "fout": "Dat is geen geldig bedrag. Gebruik bijvoorbeeld 1234,56."}
+        except Exception:
+            return {"ok": False, "fout": "Bewerken mislukt.", "detail": traceback.format_exc()}
+
+    def herstel_veld(self, tid, veld):
+        """Haalt de handmatige correctie van één veld weg; de bankwaarde geldt weer."""
+        if not self.model:
+            return {"ok": False, "fout": "Nog geen bestand geladen."}
+        if veld not in self.BEWERKBAAR:
+            return {"ok": False, "fout": "Dit veld is niet te bewerken."}
+        try:
+            self.model.wis_override(tid, veld)
+            self.bonnen_analyse = None
+            return {"ok": True, "data": model_naar_dict(self.model)}
+        except Exception:
+            return {"ok": False, "fout": "Herstellen mislukt.", "detail": traceback.format_exc()}
+
     # ---- bonnencontrole (Fase 7) ----
     def kies_bonnen_map(self):
         if not self.model:

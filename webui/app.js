@@ -32,6 +32,7 @@ const ICONEN = {
   waarschuwing: '<path d="M12 4 3.5 19h17L12 4Z"/><path d="M12 9v4m0 3h.01"/>',
   zoek: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>',
   bon: '<path d="M7 3h10v18l-2-1.4L13 21l-2-1.4L9 21l-2-1.4V3Z"/><path d="M10 8h4m-4 4h4"/>',
+  pen: '<path d="M4 20h4L18.5 9.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4Z"/><path d="m13 7 4 4"/>',
 };
 
 function icoon(naam, klasse = "") {
@@ -136,6 +137,113 @@ function btwCel(r) {
   return td;
 }
 
+/* ---------- inline bewerken: elke waarde is een correctie met pen ----------
+   Klik op een waarde -> invoerveld; Enter of wegklikken bewaart, Escape annuleert.
+   Python rekent het hele model opnieuw door en de UI wordt uit dat verse model herbouwd,
+   dus elke tab, totaal en rubriek volgt automatisch. Bewerkte waarden krijgen een blauwe
+   inkt-onderstreping en een herstel-knop die de bankwaarde terugzet. */
+const VELD_LABELS = {
+  bedrag: "Bedrag", naam: "Naam", leverancier: "Leverancier", factuur: "Factuurnummer",
+  btw_pct: "Btw", richting: "Soort", is_investering: "Investering",
+};
+
+function bedragInvoer(n) {
+  return Math.abs(Number(n) || 0).toFixed(2).replace(".", ",");
+}
+
+function isBewerkt(r, veld) {
+  return Boolean(r.bewerkt && Object.prototype.hasOwnProperty.call(r.bewerkt, veld));
+}
+
+function herstelKnop(r, veld) {
+  const orig = r.bewerkt[veld];
+  const origTekst = veld === "bedrag" ? geld(Number(orig)) : (orig == null || orig === "" ? "leeg" : String(orig));
+  const h = el("button", {
+    class: "herstel", type: "button",
+    title: `Herstel bankwaarde: ${origTekst}`,
+    "aria-label": `Herstel ${VELD_LABELS[veld]} van ${r.naam} naar ${origTekst}`,
+  }, icoon("herstel"));
+  h.addEventListener("click", () => herstelVeld(r.id, veld));
+  return h;
+}
+
+function bewerkbaar(r, veld, opties = {}) {
+  const waarde = r[veld];
+  const tekst = opties.toon ? opties.toon(r)
+    : (waarde == null || waarde === "" ? (opties.leeg ?? "—") : String(waarde));
+  const wrap = el("span", { class: "bewerk" + (isBewerkt(r, veld) ? " -bewerkt" : "") + (opties.klasse ? " " + opties.klasse : "") });
+  const knop = el("button", {
+    class: "bewerk-knop", type: "button", "data-edit": `${r.id}:${veld}`,
+    title: "Klik om te bewerken",
+    "aria-label": `${VELD_LABELS[veld]} bewerken voor ${r.naam}, nu ${tekst}`,
+  }, [el("span", { class: "bewerk-tekst", text: tekst }), icoon("pen", "bewerk-pen")]);
+  knop.addEventListener("click", () => openInvoer(wrap, r, veld, opties));
+  wrap.append(knop);
+  if (isBewerkt(r, veld)) wrap.append(herstelKnop(r, veld));
+  return wrap;
+}
+
+function openInvoer(wrap, r, veld, opties) {
+  const isBedrag = veld === "bedrag";
+  const oud = isBedrag ? bedragInvoer(r.bedrag) : (r[veld] || "");
+  const input = el("input", {
+    class: "bewerk-invoer" + (isBedrag ? " getal" : ""), type: "text",
+    value: oud, inputMode: isBedrag ? "decimal" : "text", autocomplete: "off",
+    "data-edit": `${r.id}:${veld}`,
+    "aria-label": `${VELD_LABELS[veld]} voor ${r.naam}${isBedrag ? " (bedrag inclusief btw)" : ""}`,
+  });
+  let klaar = false;
+  const sluit = () => {
+    if (klaar) return;
+    klaar = true;
+    const vers = bewerkbaar(r, veld, opties);
+    wrap.replaceWith(vers);
+    vers.querySelector("button")?.focus();
+  };
+  const bevestig = () => {
+    if (klaar) return;
+    const v = input.value.trim();
+    if (v === String(oud).trim()) { sluit(); return; }
+    klaar = true;
+    bewerkVeld(r.id, veld, v);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); bevestig(); }
+    else if (e.key === "Escape") { e.preventDefault(); sluit(); }
+  });
+  input.addEventListener("blur", bevestig);
+  wrap.replaceChildren(input);
+  input.focus();
+  input.select();
+}
+
+function richtingKeuze(r) {
+  const sel = el("select", { class: "btw-select", "data-edit": `${r.id}:richting`,
+    "aria-label": `Soort voor ${r.naam}, nu ${RICHTING_PIL[r.richting]?.[1] || r.richting}` });
+  for (const [k, [, label]] of Object.entries(RICHTING_PIL)) {
+    const o = el("option", { value: k, text: label });
+    if (k === r.richting) o.selected = true;
+    sel.append(o);
+  }
+  sel.addEventListener("change", () => bewerkVeld(r.id, "richting", sel.value));
+  const wrap = el("span", { class: "bewerk" + (isBewerkt(r, "richting") ? " -bewerkt" : "") }, sel);
+  if (isBewerkt(r, "richting")) wrap.append(herstelKnop(r, "richting"));
+  return wrap;
+}
+
+function investeringSchakelaar(r) {
+  const box = el("input", { type: "checkbox", id: `inv-${r.id}`, "data-edit": `${r.id}:is_investering` });
+  box.checked = Boolean(r.is_investering);
+  box.addEventListener("change", () => bewerkVeld(r.id, "is_investering", box.checked));
+  const wrap = el("label", { class: "detail-onthoud bewerk" + (isBewerkt(r, "is_investering") ? " -bewerkt" : "") }, [box, "Telt als investering"]);
+  if (isBewerkt(r, "is_investering")) wrap.append(herstelKnop(r, "is_investering"));
+  return wrap;
+}
+
+function focusEdit(id, veld) {
+  requestAnimationFrame(() => document.querySelector(`[data-edit="${id}:${veld}"]`)?.focus());
+}
+
 function btwBronTekst(bron) {
   return {
     override: "Handmatig aangepast",
@@ -180,11 +288,16 @@ function transactieDetailRij(r, kolommen) {
         el("span", { text: datumLang(r.datum) }),
       ]),
       el("dl", { class: "detail-grid" }, [
-        el("div", {}, [el("dt", { text: "Tegenrekening" }), el("dd", { text: r.tegenrekening || "Niet beschikbaar" })]),
-        el("div", {}, [el("dt", { text: "Classificatie" }), el("dd", { text: RICHTING_PIL[r.richting]?.[1] || r.richting })]),
+        el("div", {}, [el("dt", { text: "Naam" }), el("dd", {}, bewerkbaar(r, "naam"))]),
+        el("div", {}, [el("dt", { text: "Leverancier" }), el("dd", {}, bewerkbaar(r, "leverancier"))]),
+        el("div", {}, [el("dt", { text: "Factuurnummer" }), el("dd", {}, bewerkbaar(r, "factuur", { leeg: "Geen" }))]),
+        el("div", {}, [el("dt", { text: "Bedrag incl. btw" }), el("dd", {}, bewerkbaar(r, "bedrag", { toon: (x) => geld(Math.abs(x.bedrag)) }))]),
+        el("div", {}, [el("dt", { text: "Soort" }), el("dd", {}, richtingKeuze(r))]),
         el("div", {}, [el("dt", { text: "Exclusief btw" }), el("dd", { text: geld(r.excl) })]),
         el("div", {}, [el("dt", { text: "Btw-instelling" }), el("dd", {}, btwVeld)]),
         el("div", {}, [el("dt", { text: "Herkomst btw" }), el("dd", { text: btwBronTekst(r.btw_bron) })]),
+        el("div", {}, [el("dt", { text: "Investering" }), el("dd", {}, investeringSchakelaar(r))]),
+        el("div", {}, [el("dt", { text: "Tegenrekening" }), el("dd", { text: r.tegenrekening || "Niet beschikbaar" })]),
         el("div", { class: "detail-breed" }, [
           el("dt", { text: "Mededeling" }),
           el("dd", { text: r.mededelingen || "Niet beschikbaar" }),
@@ -229,10 +342,10 @@ function bouwTransactieTabel(rijen) {
     const hoofd = el("tr", { class: "transactie-hoofd", "data-id": r.id }, [
       el("td", { class: "tx-datum", text: datum(r.datum) }),
       el("td", { class: "tx-omschrijving" }, openKnop),
-      el("td", { class: "tx-leverancier", text: r.leverancier || "—" }),
-      el("td", { class: "tx-factuur", text: r.factuur || "—" }),
+      el("td", { class: "tx-leverancier" }, bewerkbaar(r, "leverancier")),
+      el("td", { class: "tx-factuur" }, bewerkbaar(r, "factuur")),
       soort,
-      el("td", { class: "getal tx-bedrag", text: geld(getoondBedrag(r)) }),
+      el("td", { class: "getal tx-bedrag" }, bewerkbaar(r, "bedrag", { toon: (x) => geld(getoondBedrag(x)) })),
       btwCel(r),
       el("td", { class: "getal tx-btw-bedrag", text: geld(r.btw) }),
     ]);
@@ -332,7 +445,7 @@ function paneelTransacties(d) {
       teller,
       reset,
     ]),
-    el("p", { class: "table-note", text: "Open een regel voor broninformatie en leveranciersspecifieke btw-instellingen." }),
+    el("p", { class: "table-note", text: "Klik op een leverancier, factuurnummer, bedrag of btw om het te corrigeren; alles rekent direct door. Open een regel voor naam, soort, investering en broninformatie." }),
     resultaat,
   ]);
 }
@@ -621,14 +734,33 @@ function paneelAangifte(d) {
   return el("div", { class: "aangifte-paneel" }, kinderen);
 }
 
+function bewerkCel(veld, opties = {}) {
+  return (r) => el("td", { class: opties.getal ? "getal" : "" }, bewerkbaar(r, veld, opties));
+}
+
+/* Btw-keuze in een rapporttabel: gewone tabelcel (geen flex-cel zoals in de transactietabel). */
+function btwBewerkCel(r) {
+  const wrap = el("span", { class: "bewerk" + (r.btw_bron === "override" ? " -bewerkt" : "") }, maakBtwSelect(r));
+  if (r.btw_bron === "override") {
+    const h = el("button", { class: "herstel", type: "button", title: "Herstel automatische btw",
+      "aria-label": `Herstel automatische btw voor ${r.naam}` }, icoon("herstel"));
+    h.addEventListener("click", () => herstelBtw(r.id));
+    wrap.append(h);
+  }
+  return el("td", { class: "getal" }, wrap);
+}
+
 function richtingKolommen() {
   return [
     { key: "datum", label: "Datum", render: datum },
-    { key: "naam", label: "Naam" },
-    { key: "leverancier", label: "Leverancier" },
-    { key: "factuur", label: "Factuur" },
-    { key: "btw_pct", label: "Btw %", getal: true, render: (v) => v + "%" },
-    { key: "bedrag", label: "Bedrag incl.", getal: true, cel: (r) => bedragCel(r.bedrag, r.richting) },
+    { key: "naam", label: "Naam", cel: bewerkCel("naam") },
+    { key: "leverancier", label: "Leverancier", cel: bewerkCel("leverancier") },
+    { key: "factuur", label: "Factuur", cel: bewerkCel("factuur") },
+    { key: "btw_pct", label: "Btw %", getal: true, cel: btwBewerkCel },
+    { key: "bedrag", label: "Bedrag incl.", getal: true, cel: (r) => {
+      const klasse = r.richting === "inkomst" ? "bedrag-plus" : "bedrag-min";
+      return el("td", { class: "getal " + klasse }, bewerkbaar(r, "bedrag", { toon: (x) => geld(x.bedrag) }));
+    } },
     { key: "excl", label: "Excl. btw", getal: true, render: geld },
     { key: "btw", label: "Btw", getal: true, render: geld },
   ];
@@ -658,19 +790,21 @@ function paneelInvesteringen(d) {
   kinderen.push(bouwTabel(
     [
       { key: "datum", label: "Datum", render: datum },
-      { key: "leverancier", label: "Leverancier" },
-      { key: "factuur", label: "Factuur" },
-      { key: "bedrag", label: "Bedrag incl.", getal: true, render: geld },
+      { key: "leverancier", label: "Leverancier", cel: bewerkCel("leverancier") },
+      { key: "factuur", label: "Factuur", cel: bewerkCel("factuur") },
+      { key: "bedrag", label: "Bedrag incl.", getal: true, cel: bewerkCel("bedrag", { getal: true, toon: (x) => geld(x.bedrag) }) },
       { key: "excl", label: "Excl. btw", getal: true, render: geld },
       { key: "btw", label: "Btw", getal: true, render: geld },
+      { key: "is_investering", label: "Investering", cel: (r) => el("td", {}, investeringSchakelaar(r)) },
     ],
     d.investeringen,
     { voet: [
         el("td", { colspan: 4 }, el("strong", { text: "Totaal (excl. btw)" })),
         el("td", { class: "getal" }, el("strong", { text: geld(totExcl) })),
-        el("td", {}),
+        el("td", { colspan: 2 }),
       ] }
   ));
+  kinderen.push(el("p", { class: "table-note", text: "Vinkje uit? Dan telt de uitgave als gewone kosten. Een uitgave onder de drempel markeer je als investering via de Transacties-tab." }));
   kinderen.push(el("aside", { class: "fiscale-notitie" }, [
     el("strong", { text: "Fiscale context" }),
     el("p", { text:
@@ -1100,28 +1234,60 @@ async function annuleerImport() {
   }
 }
 
-function naEdit(data, id, melding) {
+function naEdit(data, focusSelector, melding) {
   bonnenData = null;
   renderModel(data); // herbouwt de werkbladen uit het verse model
-  const sel = document.querySelector(`.btw-select[data-id="${id}"]`);
-  if (sel) sel.focus();
+  status("");
+  requestAnimationFrame(() => document.querySelector(focusSelector)?.focus());
   toonToast("Wijziging opgeslagen", melding, "ok");
 }
 
+function bewerkMislukt(id, veld, fout) {
+  toonToast("Niet opgeslagen", fout || "Bewerken mislukt.", "fout");
+  status("");
+  if (huidigeData) renderModel(huidigeData); // zet een open invoerveld terug op de huidige waarde
+  focusEdit(id, veld);
+}
+
 async function bewerkBtw(id, pct, onthoud = false) {
-  if (!heeftApi()) { toonToast("Niet beschikbaar", "Bewerken werkt alleen in de desktop-app.", "fout"); return; }
+  if (!heeftApi()) { bewerkMislukt(id, "btw_pct", "Bewerken werkt alleen in de desktop-app."); return; }
   status("Bezig met bijwerken…");
-  const r = await window.pywebview.api.zet_btw(id, parseInt(pct, 10), onthoud);
-  if (!r.ok) { status(r.fout || "Bewerken mislukt.", "fout"); return; }
-  naEdit(r.data, id, `Btw aangepast naar ${pct}%.` + (onthoud ? " Deze keuze wordt voor de leverancier onthouden." : ""));
+  try {
+    const r = await window.pywebview.api.zet_btw(id, parseInt(pct, 10), onthoud);
+    if (!r.ok) { bewerkMislukt(id, "btw_pct", r.fout); return; }
+    naEdit(r.data, `.btw-select[data-id="${id}"]`,
+      `Btw aangepast naar ${pct}%.` + (onthoud ? " Deze keuze wordt voor de leverancier onthouden." : ""));
+  } catch (e) { bewerkMislukt(id, "btw_pct", "Onverwachte fout."); }
 }
 
 async function herstelBtw(id) {
   if (!heeftApi()) return;
   status("Bezig met herstellen…");
-  const r = await window.pywebview.api.herstel_btw(id);
-  if (!r.ok) { status(r.fout || "Herstellen mislukt.", "fout"); return; }
-  naEdit(r.data, id, "Btw hersteld naar de automatische waarde.");
+  try {
+    const r = await window.pywebview.api.herstel_btw(id);
+    if (!r.ok) { bewerkMislukt(id, "btw_pct", r.fout); return; }
+    naEdit(r.data, `.btw-select[data-id="${id}"]`, "Btw hersteld naar de automatische waarde.");
+  } catch (e) { bewerkMislukt(id, "btw_pct", "Onverwachte fout."); }
+}
+
+async function bewerkVeld(id, veld, waarde) {
+  if (!heeftApi()) { bewerkMislukt(id, veld, "Bewerken werkt alleen in de desktop-app."); return; }
+  status("Bezig met bijwerken…");
+  try {
+    const r = await window.pywebview.api.zet_veld(id, veld, waarde);
+    if (!r.ok) { bewerkMislukt(id, veld, r.fout); return; }
+    naEdit(r.data, `[data-edit="${id}:${veld}"]`, `${VELD_LABELS[veld]} aangepast. Alle tabs, totalen en de aangifte zijn bijgewerkt.`);
+  } catch (e) { bewerkMislukt(id, veld, "Onverwachte fout."); }
+}
+
+async function herstelVeld(id, veld) {
+  if (!heeftApi()) { bewerkMislukt(id, veld, "Herstellen werkt alleen in de desktop-app."); return; }
+  status("Bezig met herstellen…");
+  try {
+    const r = await window.pywebview.api.herstel_veld(id, veld);
+    if (!r.ok) { bewerkMislukt(id, veld, r.fout); return; }
+    naEdit(r.data, `[data-edit="${id}:${veld}"]`, `${VELD_LABELS[veld]} hersteld naar de waarde uit het bankbestand.`);
+  } catch (e) { bewerkMislukt(id, veld, "Onverwachte fout."); }
 }
 
 async function classificeerRichting(id, richting) {

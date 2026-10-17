@@ -41,6 +41,8 @@ def tx_dict(t: dict) -> dict:
         "is_verlegd": bool(t.get("is_verlegd")),
         "is_kredietfactuur": bool(t.get("is_kredietfactuur")),
         "auto_nul": bool(t.get("btw_auto_nul")),
+        # Handmatig bewerkte velden met hun oorspronkelijke waarde (voor markering + herstel).
+        "bewerkt": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in (t.get("bewerkt") or {}).items()},
     }
 
 

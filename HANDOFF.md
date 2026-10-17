@@ -62,7 +62,7 @@ Bij een handmatige richting volgt het teken de geldstroom: een "Bij"-regel als u
 `override (overrides.json) > verlegde btw > automatische 0% (config) > onthouden keuze (leveranciers.json) > standaard 21%`. Een handmatige btw-override zet `is_verlegd=False` en `btw_bron="override"`.
 
 ### Persistentie
-- `overrides.json` **naast de app** = handmatige correcties per transactie (btw%, richting, investering), sleutel = `tx_id` (sha1 van datum+bedrag+tegenrekening+mededeling, 12 tekens, stabiel over kwartalen). Gitignored.
+- `overrides.json` **naast de app** = handmatige correcties per transactie (btw%, richting, investering, bedrag, naam, leverancier, factuurnummer), sleutel = `tx_id` (sha1 van datum+bedrag+tegenrekening+mededeling, 12 tekens, stabiel over kwartalen). Gitignored.
 - `leveranciers.json` = onthouden btw per leverancier (met "onthoud voor deze leverancier" overschrijven). Gitignored.
 - `overrides.json` **in de bonnenmap** = iets heel anders: handmatige bon-correcties (`genegeerd`/`forceer_nummer`), gelezen door `bonnen_matcher`.
 
@@ -70,7 +70,9 @@ Bij een handmatige richting volgt het teken de geldstroom: een "Bij"-regel als u
 
 pywebview stelt de `Api`-methoden 1-op-1 bloot als `window.pywebview.api.<naam>()` (snake_case, geen camelCase). Alles retourneert `{ok: bool, ...}`; bij succes meestal `{ok:true, data:<model-of-bonnen-dict>}`, bij annuleren `{ok:false, geannuleerd:true}`, bij fout `{ok:false, fout:"nl-tekst", detail:"traceback"}`.
 
-Door `webui/app.js` aangeroepen: `kies_csv`, `bevestig_csv`, `annuleer_csv`, `huidige_data`, `zet_btw`, `herstel_btw`, `zet_richting`, `kies_bonnen_map`, `download_excel`.
+Door `webui/app.js` aangeroepen: `kies_csv`, `bevestig_csv`, `annuleer_csv`, `huidige_data`, `zet_btw`, `herstel_btw`, `zet_richting`, `zet_veld`, `herstel_veld`, `kies_bonnen_map`, `download_excel`.
+
+**Alles bewerkbaar (17-10-2026):** `zet_veld(tid, veld, waarde)` / `herstel_veld(tid, veld)` zijn de generieke ingang voor `bedrag` (string "1.234,56" of getal, > 0), `naam`, `leverancier`, `factuur` (lege tekst = herstellen), `btw_pct` (0-100), `richting` (inkomst|uitgave) en `is_investering` (bool). Alles loopt via `Boekhouding.zet_override` -> `overrides.json` -> volledige herberekening, dus elke tab, totaal, rubriek en de Excel volgen automatisch. In `tx_dict` staat `bewerkt: {veld: oorspronkelijke waarde}`; de UI (`bewerkbaar()` in app.js) toont bewerkte waarden met blauwe onderstreping en een herstel-knop. Bedrag en naam worden in `Boekhouding.bereken` vóór de classificatie vervangen; `tx_id` blijft op de ruwe bankregel gebaseerd.
 
 Import verloopt in twee stappen (preview -> bevestigen): `kies_csv`/`bereid_csv_voor` berekent een preview zonder het actieve kwartaal te vervangen; `bevestig_csv` maakt het actief (en schrijft dan pas het leveranciers-geheugen); `annuleer_csv` gooit de preview weg. `laad(pad)` = preview + bevestig ineen (voor een start-csv van de commandoregel).
 

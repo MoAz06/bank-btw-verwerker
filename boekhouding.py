@@ -256,7 +256,9 @@ def classificeer_richting(transactie: dict, omschrijving: str, geldige_jaarmaand
     return None, False, None
 
 
-BTW_VELDEN = ("btw_pct", "richting", "is_investering", "uitgesloten")
+# Velden die per transactie handmatig te overschrijven zijn (overrides.json).
+OVERRIDE_VELDEN = ("btw_pct", "richting", "is_investering", "uitgesloten", "bedrag", "naam", "leverancier", "factuur")
+BTW_VELDEN = OVERRIDE_VELDEN  # compat-alias
 
 
 class Boekhouding:
@@ -316,12 +318,25 @@ class Boekhouding:
         self.aantal_kredietfactuur = 0
         self.nieuwe_leveranciers = 0
         for t in overig:
-            tid = tx_id(t)
+            tid = tx_id(t)  # altijd op de ruwe bankregel, zodat correcties stabiel blijven
             ovr = self.overrides.get(tid, {})
+            bewerkt = {}  # veld -> oorspronkelijke (automatische) waarde, voor herstellen in de UI
+
+            # Handmatig bedrag of naam: vervangt de bankwaarde voor alles wat volgt.
+            if isinstance(ovr.get("bedrag"), (int, float)) and float(ovr["bedrag"]) > 0:
+                bewerkt["bedrag"] = t["bedrag"]
+                t = {**t, "bedrag": round(float(ovr["bedrag"]), 2)}
+            if isinstance(ovr.get("naam"), str) and ovr["naam"].strip():
+                bewerkt["naam"] = t["naam"]
+                t = {**t, "naam": ovr["naam"].strip()}
             omschrijving = bepaal_omschrijving_tekst(t["mededelingen"])
+            if isinstance(ovr.get("factuur"), str) and ovr["factuur"].strip():
+                bewerkt["factuur"] = omschrijving
+                omschrijving = ovr["factuur"].strip()
             richting, is_krediet, buiten_jaarmaand = classificeer_richting(t, omschrijving, self.geldige_jaarmaanden)
 
             if ovr.get("richting"):  # handmatige richting-correctie wint
+                bewerkt["richting"] = richting
                 richting, buiten_jaarmaand = ovr["richting"], None
                 # Het teken volgt de geldstroom: geld dat BINNENKWAM maar als uitgave wordt
                 # geboekt is een creditnota (negatieve kosten); geld dat WEGGING maar als
@@ -344,8 +359,12 @@ class Boekhouding:
                 self.aantal_kredietfactuur += 1
 
             leverancier = normaliseer_leverancier(t["naam"], aliassen)
+            if isinstance(ovr.get("leverancier"), str) and ovr["leverancier"].strip():
+                bewerkt["leverancier"] = leverancier
+                leverancier = ovr["leverancier"].strip()
             btw_pct, btw_bron, is_verlegd, is_auto_nul = bepaal_btw(t, leverancier, config, geheugen)
             if isinstance(ovr.get("btw_pct"), (int, float)):  # handmatige btw-correctie wint van alles
+                bewerkt["btw_pct"] = btw_pct
                 btw_pct, btw_bron, is_auto_nul = int(ovr["btw_pct"]), "override", int(ovr["btw_pct"]) == 0
                 is_verlegd = False
             excl = excl_van(t["bedrag"], btw_pct)
@@ -355,11 +374,13 @@ class Boekhouding:
                 and leverancier not in config.get("geen_investering_leveranciers", [])
             )
             if "is_investering" in ovr:
+                bewerkt["is_investering"] = is_investering
                 is_investering = bool(ovr["is_investering"])
 
             verwerkt.append({
                 **t,
                 "tx_id": tid,
+                "bewerkt": bewerkt,
                 "richting": richting,
                 "is_kredietfactuur": is_krediet,
                 "factuur": omschrijving,
@@ -384,7 +405,7 @@ class Boekhouding:
 
     # ---- bewerken (Fase 4) ----
     def zet_override(self, tid: str, veld: str, waarde, bewaar: bool = True):
-        if veld not in BTW_VELDEN:
+        if veld not in OVERRIDE_VELDEN:
             raise ValueError(f"onbekend override-veld: {veld}")
         self.overrides.setdefault(tid, {})[veld] = waarde
         self.bereken()
