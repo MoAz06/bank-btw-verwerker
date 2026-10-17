@@ -877,7 +877,7 @@ function bouwTablist() {
   const lijst = document.getElementById("tablist");
   lijst.innerHTML = "";
   let laatsteGroep = null;
-  TABS.forEach((t) => {
+  TABS.forEach((t, i) => {
     if (t.groep !== laatsteGroep) {
       laatsteGroep = t.groep;
       lijst.append(el("p", {
@@ -894,7 +894,12 @@ function bouwTablist() {
       tabindex: t.key === actieveTab ? "0" : "-1",
       "data-key": t.key,
       "data-group": t.groep,
-    }, [t.label, badge]);
+    }, [
+      // Nummering als in de inhoudsopgave van een formulier.
+      el("span", { class: "tab-nr", "aria-hidden": "true", text: String(i + 1).padStart(2, "0") }),
+      t.label,
+      badge,
+    ]);
     btn.addEventListener("click", () => toonTab(t.key));
     lijst.append(btn);
   });

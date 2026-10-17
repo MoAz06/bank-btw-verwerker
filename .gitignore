@@ -12,7 +12,7 @@ overrides.json
 _golden/
 
 # Lokale preview met echte data (herbouwd uit scratchpad-script)
-webui/_preview.html
+webui/_preview*.html
 
 # Build-artefacten (te herbouwen uit de source)
 __pycache__/
@@ -23,3 +23,6 @@ dist/
 *.spec
 !bank_btw_app.spec
 *.exe
+
+# lokale launch-config van de Claude-app (preview-server)
+.claude/launch.json
