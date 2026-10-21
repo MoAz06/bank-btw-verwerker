@@ -28,16 +28,24 @@ def snapshot(csv_pad: Path) -> dict:
     Verse leveranciers-geheugen (config-gestuurde btw) voor reproduceerbaarheid; schrijft naar
     een tijdelijke output zodat er geen bestanden blijven slingeren.
     """
-    geheugen_pad = programma_map() / "leveranciers.json"
-    if geheugen_pad.exists():
-        geheugen_pad.unlink()
-
+    # Draai in een tijdelijke programma-map met alleen een kopie van config.json, zodat de
+    # echte leveranciers.json/overrides.json van de gebruiker onaangeraakt blijven en het
+    # geheugen altijd vers is (reproduceerbaar).
+    import shutil
+    import boekhouding
+    import ing_btw_verwerker
+    echte_map = programma_map()
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "out.xlsx"
-        r = verwerk_bestand(csv_pad, out, overrides={})
-
-    if geheugen_pad.exists():
-        geheugen_pad.unlink()
+        tmp_map = Path(tmp)
+        if (echte_map / "config.json").exists():
+            shutil.copy(echte_map / "config.json", tmp_map / "config.json")
+        boekhouding.programma_map = lambda: tmp_map
+        ing_btw_verwerker.programma_map = lambda: tmp_map
+        try:
+            r = verwerk_bestand(csv_pad, tmp_map / "out.xlsx", overrides={})
+        finally:
+            boekhouding.programma_map = lambda: echte_map
+            ing_btw_verwerker.programma_map = lambda: echte_map
 
     aangifte = _bepaal_aangifte_info(r["transacties"], _config())
 

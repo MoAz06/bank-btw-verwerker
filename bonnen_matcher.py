@@ -6,7 +6,7 @@ import re
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import pdfplumber
@@ -17,26 +17,40 @@ MAAND_NAAM_NAAR_NUMMER = {
 }
 
 LABEL_NUMMER_PATROON = re.compile(
-    r"(?:Factuurnummer|Factuurnr\.?|Factuur\s*nr\.?|Contractnummer|Aanslagnummer|"
-    r"Bestelnummer|Bestelling\s*#|Ordernummer|Order\s*nr\.?)\s*[:\s#]*\s*([A-Za-z0-9][A-Za-z0-9\-\.]{3,20})",
+    r"(?:Factuurnummer|Factuurnr\.?|Factuur\s*nr\.?|Factuur|Contractnummer|Aanslagnummer|Kwitantienummer|"
+    r"Bestelnummer|Bestelling\s*#|Ordernummer|Order\s*nr\.?|Referentie|Kenmerk)(?![A-Za-z])\s*[:\s#]*\s*([A-Za-z0-9][A-Za-z0-9\-\.]{3,20})",
     re.IGNORECASE,
 )
 KAAL_NUMMER_PATROON = re.compile(r"\b\d{5,15}\b")
+# Factuurnummers met streepjes, zoals "8A5-2026-04", "2026-0103", "012-2026", "26-0126091".
+CODE_NUMMER_PATROON = re.compile(r"\b(?=(?:[A-Z0-9\-]*\d){5})[A-Z0-9]{2,6}-\d{2,6}(?:-\d{2,6})?\b")
 
-# Voorkeur voor een bedrag dat expliciet "incl. btw" vermeldt (het echte totaalbedrag) boven
-# een kale "Totaal"-regel, want sommige bonnen tonen ook een subtotaal-per-btw-tarief.
-BEDRAG_INCL_PATROON = re.compile(
-    r"Totaal\s*(?:bedrag)?\s*incl\.?\s*(?:BTW)?\s*[:\s]*(?:EUR|€)?\s*([0-9][0-9\.]*,\d{2})", re.IGNORECASE
+# Het totaalbedrag: het grootste bedrag dat bij een "Totaal"/"Te betalen"-label staat (incl. is
+# altijd >= excl., en een subtotaal per btw-tarief is kleiner). Lukt dat niet, dan het grootste
+# bedrag met een euroteken. Een bon met alleen "Totaal 0,00" levert geen bedrag op.
+# Bedragen in Nederlandse notatie (1.234,56) én internationale webshop-notatie (1,234.56 / 56.88).
+_BEDRAG = r"([0-9][0-9\.,]*[\.,]\d{2})(?!\d)"
+TOTAAL_LABEL_PATROON = re.compile(
+    r"(?:Tota(?:al|le)|Te\s+betalen|Eindbedrag|Totaalbedrag)[^0-9]{0,45}?" + _BEDRAG, re.IGNORECASE
 )
-TOTAAL_BEDRAG_PATROON = re.compile(
-    r"Totaal\s*(?:incl\.?\s*BTW)?\s*[:\s]*(?:EUR|€)?\s*([0-9][0-9\.]*,\d{2})", re.IGNORECASE
-)
-ELK_BEDRAG_PATROON = re.compile(r"(?:€|EUR)\s*([0-9][0-9\.]*,\d{2})", re.IGNORECASE)
+ELK_BEDRAG_PATROON = re.compile(r"(?:€|EUR)\s*" + _BEDRAG, re.IGNORECASE)
 
-DATUM_LABEL_PATROON = re.compile(
-    r"(?:Factuurdatum|Datum|Dagtekening|Documentdatum)\s*[:\s]*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})", re.IGNORECASE
-)
+# Datumlabels op volgorde van betrouwbaarheid: de factuurdatum gaat vóór een kale "Datum"
+# (die vaak de afdruk- of betaaldatum is). "Vervaldatum"/"Leverdatum" tellen niet mee.
+_DATUM_LABELS = ["Factuurdatum", "Documentdatum", r"Datum\s+bestelling", "Dagtekening", "Datum"]
+_MAANDEN = "januari|februari|maart|april|mei|juni|juli|augustus|september|oktober|november|december"
+DATUM_LABEL_PATRONEN = [
+    (
+        re.compile(r"(?<![A-Za-z])" + label + r"(?![A-Za-z])\s*[:\s]*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})", re.IGNORECASE),
+        re.compile(r"(?<![A-Za-z])" + label + r"(?![A-Za-z])\s*[:\s]*(\d{4})-(\d{2})-(\d{2})", re.IGNORECASE),
+        re.compile(r"(?<![A-Za-z])" + label + r"(?![A-Za-z])\s*[:\s]*(\d{1,2})\s+(" + _MAANDEN + r")\s+(\d{4})", re.IGNORECASE),
+    )
+    for label in _DATUM_LABELS
+]
 DATUM_KAAL_PATROON = re.compile(r"\b(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})\b")
+DATUM_KASSA_PATROON = re.compile(r"\b(\d{4})-([a-z]{3})-(\d{1,2})\b", re.IGNORECASE)
+MAAND_AFKORTING = {"jan": 1, "feb": 2, "mrt": 3, "maa": 3, "mar": 3, "apr": 4, "mei": 5, "may": 5, "jun": 6,
+                   "jul": 7, "aug": 8, "sep": 9, "okt": 10, "oct": 10, "nov": 11, "dec": 12}
 DATUM_TEKST_PATROON = re.compile(
     r"\b(\d{1,2})\s+(januari|februari|maart|april|mei|juni|juli|augustus|september|oktober|november|december)\s+(\d{4})\b",
     re.IGNORECASE,
@@ -71,7 +85,17 @@ def _ocr_pagina(pagina_afbeelding, tesseract_cmd: str, taal: str) -> str:
             pagina_afbeelding = pagina_afbeelding.rotate(360 - rotatie, expand=True)
     except Exception:
         pass
-    return pytesseract.image_to_string(pagina_afbeelding, lang=taal)
+    tekst = pytesseract.image_to_string(pagina_afbeelding, lang=taal)
+    if len(tekst.strip()) >= 40:
+        return tekst
+    # Bijna niets herkend: de scan ligt waarschijnlijk gedraaid. Probeer de andere richtingen
+    # en houd de lezing met de meeste tekst.
+    beste = tekst
+    for graden in (90, 180, 270):
+        poging = pytesseract.image_to_string(pagina_afbeelding.rotate(graden, expand=True), lang=taal)
+        if len(poging.strip()) > len(beste.strip()):
+            beste = poging
+    return beste
 
 
 PDF_EXTENSIES = {".pdf"}
@@ -143,38 +167,84 @@ def lees_afbeelding_tekst(beeld_pad: Path) -> tuple:
 
 def vind_kandidaat_nummers(tekst: str) -> list:
     gelabeld = [m.group(1) for m in LABEL_NUMMER_PATROON.finditer(tekst)]
+    codes = CODE_NUMMER_PATROON.findall(tekst)
     kaal = KAAL_NUMMER_PATROON.findall(tekst)
     gezien = set()
     resultaat = []
-    for nummer in gelabeld + kaal:
-        genormaliseerd = nummer.strip()
+    for nummer in gelabeld + codes + kaal:
+        genormaliseerd = nummer.strip().rstrip(".")
+        # Een datum ("06-03-2026") is geen factuurnummer.
+        if DATUM_KAAL_PATROON.fullmatch(genormaliseerd):
+            continue
         if genormaliseerd not in gezien:
             gezien.add(genormaliseerd)
             resultaat.append(genormaliseerd)
     return resultaat
 
 
+def _naar_bedrag(tekst: str) -> float:
+    """'1.234,56' -> 1234.56, '1,234.56' -> 1234.56, '56.88' -> 56.88: het laatste scheidingsteken is de komma."""
+    laatste = max(tekst.rfind(","), tekst.rfind("."))
+    heel, decimaal = tekst[:laatste], tekst[laatste + 1:]
+    heel = re.sub(r"[\.,]", "", heel)
+    return float(f"{heel or '0'}.{decimaal}")
+
+
 def vind_bedrag(tekst: str):
-    match = BEDRAG_INCL_PATROON.findall(tekst) or TOTAAL_BEDRAG_PATROON.findall(tekst)
-    bron = match if match else ELK_BEDRAG_PATROON.findall(tekst)
-    if not bron:
-        return None
-    bedragen = [float(b.replace(".", "").replace(",", ".")) for b in bron]
-    return max(bedragen)
+    gelabeld = []
+    for m in TOTAAL_LABEL_PATROON.finditer(tekst):
+        if re.search(r"korting|bespaar|retour", m.group(0), re.IGNORECASE):
+            continue  # "Totaal korting € 30,60" is geen totaalbedrag
+        gelabeld.append(_naar_bedrag(m.group(1)))
+    gelabeld = [b for b in gelabeld if b > 0]
+    # Bedragen met een euroteken erbij tellen ook mee: op een gescande bon staat het totaal
+    # soms los van het label ("Totaal incl. btw" op de ene regel, "EUR 69,65" verderop).
+    # Een losse regel is nooit groter dan het totaal, dus het maximum blijft het totaal.
+    los = [_naar_bedrag(b) for b in ELK_BEDRAG_PATROON.findall(tekst)]
+    los = [b for b in los if b > 0]
+    alles = gelabeld + los
+    return max(alles) if alles else None
 
 
 def vind_datum(tekst: str):
-    for patroon in (DATUM_LABEL_PATROON, DATUM_KAAL_PATROON):
-        match = patroon.search(tekst)
+    for numeriek, iso, met_tekst in DATUM_LABEL_PATRONEN:
+        match = numeriek.search(tekst)
         if match:
             try:
-                if patroon is DATUM_LABEL_PATROON:
-                    return _parse_datum_string(match.group(1))
-                dag, maand, jaar = match.groups()
-                jaar = int(jaar) if len(jaar) == 4 else 2000 + int(jaar)
-                return datetime(jaar, int(maand), int(dag))
+                return _parse_datum_string(match.group(1))
             except ValueError:
-                continue
+                pass
+        match = iso.search(tekst)
+        if match:
+            try:
+                jaar, maand, dag = match.groups()
+                return datetime(int(jaar), int(maand), int(dag))
+            except ValueError:
+                pass
+        match = met_tekst.search(tekst)
+        if match:
+            dag, maand_naam, jaar = match.groups()
+            try:
+                return datetime(int(jaar), MAAND_NAAM_NAAR_NUMMER[maand_naam.lower()], int(dag))
+            except ValueError:
+                pass
+    match = DATUM_KAAL_PATROON.search(tekst)
+    if match:
+        try:
+            dag, maand, jaar = match.groups()
+            jaar = int(jaar) if len(jaar) == 4 else 2000 + int(jaar)
+            return datetime(jaar, int(maand), int(dag))
+        except ValueError:
+            pass
+    match = DATUM_KASSA_PATROON.search(tekst)  # "2026-feb-13" (Praxis-kassabon)
+    if match:
+        jaar, maand_afk, dag = match.groups()
+        maand = MAAND_AFKORTING.get(maand_afk.lower())
+        if maand:
+            try:
+                return datetime(int(jaar), maand, int(dag))
+            except ValueError:
+                pass
     match = DATUM_TEKST_PATROON.search(tekst)
     if match:
         dag, maand_naam, jaar = match.groups()
@@ -247,8 +317,12 @@ def _naam_past_bij_tekst(transactie_naam: str, bon_tekst: str) -> float:
 
 
 def laad_overrides(bonnen_map: Path) -> dict:
-    """Handmatige correcties in overrides.json (in de bonnenmap zelf), bijvoorbeeld:
-    {"rare_bon.pdf": {"forceer_nummer": "12345"}} of {"dubbele_bon.pdf": {"genegeerd": true}}."""
+    """Handmatige correcties in overrides.json (in de bonnenmap zelf). Per bon een dict met:
+    - "tx_id": "abc123def456" (of een lijst): vaste koppeling aan die transactie(s), wint van alles
+    - "forceer_nummer": "12345": dit nummer vooraan in de kandidaat-nummers zetten
+    - "genegeerd": true: bon overslaan (hoort bij een ander kwartaal, dubbel, geen uitgave)
+    - "op_naam": true/false: handmatig vastleggen of het een factuur op jouw naam is
+    - "reden": vrije tekst, wordt genegeerd door de code (notitie voor jezelf)."""
     pad = bonnen_map / "overrides.json"
     if not pad.exists():
         return {}
@@ -259,8 +333,27 @@ def laad_overrides(bonnen_map: Path) -> dict:
         return {}
 
 
-STRAK_DAGEN_VENSTER = 5
+# Een incasso of weekfactuur wordt doorgaans 7 tot 14 dagen na de factuurdatum afgeschreven.
+STRAK_DAGEN_VENSTER = 14
 NAAM_DREMPEL = 0.3
+
+
+def _nummer_in(nummer: str, factuur: str) -> bool:
+    """Nummer als los token in de omschrijving (grenzen: geen letter/cijfer eromheen), ook in de
+    variant zonder spaties omdat ING lange nummers afbreekt ("573 0839")."""
+    patroon = re.compile(r"(?<![A-Za-z0-9])" + re.escape(nummer) + r"(?![A-Za-z0-9])", re.IGNORECASE)
+    return bool(patroon.search(factuur) or patroon.search(factuur.replace(" ", "")))
+
+
+def _naam_score(t: dict, bon: dict) -> float:
+    """Naam-overeenkomst op de banknaam én op de genormaliseerde leverancier (de banknaam is
+    vaak een betaalprovider: "... via Stichting Mollie Payments")."""
+    if not bon.get("tekst"):
+        return 0.0
+    scores = [_naam_past_bij_tekst(t["naam"], bon["tekst"])]
+    if t.get("leverancier"):
+        scores.append(_naam_past_bij_tekst(t["leverancier"], bon["tekst"]))
+    return max(scores)
 
 
 def match_bon(bon: dict, uitgaven: list, dagen_venster: int = 45):
@@ -278,11 +371,29 @@ def match_bon(bon: dict, uitgaven: list, dagen_venster: int = 45):
     herkend), dan blijft het "onzeker" - zelf controleren.
     """
     for nummer in bon["kandidaat_nummers"]:
-        treffers = [t for t in uitgaven if t["factuur"] and nummer in t["factuur"]]
+        # ING breekt lange omschrijvingen af met een spatie middenin een nummer ("573 0839"),
+        # dus vergelijk ook met de omschrijving zonder spaties.
+        # Als heel token, niet als deel van een ander nummer: "064519" (een telefoonfragment op een
+        # KPN-factuur) mag niet matchen met Travelcard-factuur "N06451933".
+        treffers = [t for t in uitgaven if t["factuur"] and _nummer_in(nummer, t["factuur"])]
         if treffers and len(treffers) <= 2:
             return treffers, "zeker", nummer
-        # Matcht een nummer meer dan 2 transacties, is het waarschijnlijk een klant/
-        # debiteurnummer (komt bij elke betaling van die partij terug), geen factuurnummer.
+        # Matcht een nummer meer dan 2 transacties, dan is het waarschijnlijk een klant- of
+        # debiteurnummer (komt bij elke betaling van die partij terug). Dat is nog steeds
+        # bruikbaar: binnen die partij kiest bedrag + datum de juiste betaling.
+        if len(treffers) > 2 and bon["bedrag"] is not None:
+            passend = [t for t in treffers if abs(t["bedrag"] - bon["bedrag"]) <= 0.02]
+            if bon["datum"] is not None:
+                passend = [t for t in passend if -5 <= (t["datum"] - bon["datum"]).days <= dagen_venster]
+                passend.sort(key=lambda t: abs((t["datum"] - bon["datum"]).days))
+            if len(passend) == 1:
+                return passend, "zeker", nummer
+            if len(passend) > 1 and bon["datum"] is not None:
+                eerste = abs((passend[0]["datum"] - bon["datum"]).days)
+                tweede = abs((passend[1]["datum"] - bon["datum"]).days)
+                if eerste <= STRAK_DAGEN_VENSTER and tweede - eerste >= STRAK_DAGEN_VENSTER:
+                    return passend[:1], "zeker", nummer
+                return passend[:1], "onzeker", nummer
 
     if bon["bedrag"] is None:
         return [], None, None
@@ -302,37 +413,100 @@ def match_bon(bon: dict, uitgaven: list, dagen_venster: int = 45):
     if len(kandidaten) == 1:
         kandidaat = kandidaten[0]
         dagen_verschil = abs((kandidaat["datum"] - bon["datum"]).days) if bon["datum"] else None
-        naam_score = _naam_past_bij_tekst(kandidaat["naam"], bon["tekst"]) if bon["tekst"] else 0.0
-        if dagen_verschil is not None and dagen_verschil <= STRAK_DAGEN_VENSTER and naam_score >= NAAM_DREMPEL:
+        if dagen_verschil is not None and dagen_verschil <= STRAK_DAGEN_VENSTER and _naam_score(kandidaat, bon) >= NAAM_DREMPEL:
             return kandidaten, "zeker", None
         return kandidaten, "onzeker", None
 
     def score(t):
-        naam_score = _naam_past_bij_tekst(t["naam"], bon["tekst"]) if bon["tekst"] else 0.0
         dagen_score = abs((t["datum"] - bon["datum"]).days) if bon["datum"] else 0
-        return (-naam_score, dagen_score)
+        return (-_naam_score(t, bon), dagen_score)
 
     kandidaten.sort(key=score)
     return kandidaten[:1], "onzeker", None
 
 
-def analyseer_bonnenmap(bonnen_map: Path, transacties: list, voortgang_callback=None) -> dict:
+# Boven dit bedrag (incl. btw) eist de Belastingdienst een factuur met jouw naam en adres
+# voor aftrek van voorbelasting; daaronder volstaat een "vereenvoudigde factuur" (kassabon).
+FACTUUR_GRENS = 100.0
+
+BEWIJS_TEKST = {
+    "factuur_op_naam": "Factuur op naam",
+    "bon_voldoende": "Kassabon (voldoende onder EUR 100)",
+    "bon_zonder_naam": "Kassabon, factuur op naam nodig",
+    "onbekend": "Niet gecontroleerd",
+}
+
+
+def _plat(tekst: str) -> str:
+    """Kleine letters zonder spaties/punten/streepjes, zodat 'NL 0012.34.567.B01' ook matcht."""
+    return re.sub(r"[\s\.\-/]", "", (tekst or "").lower())
+
+
+def staat_op_naam(bon_tekst: str, kenmerken: list):
+    """True/False als er kenmerken zijn ingesteld, None als er niets te controleren valt."""
+    kenmerken = [k for k in (kenmerken or []) if k and str(k).strip()]
+    if not kenmerken or not bon_tekst:
+        return None if not kenmerken else False
+    plat = _plat(bon_tekst)
+    return any(_plat(str(k)) in plat for k in kenmerken)
+
+
+def bewijs_status(bon: dict, treffers: list) -> str:
+    bedrag = max((abs(t.get("bedrag_effect", t["bedrag"])) for t in treffers), default=0.0)
+    if bon.get("op_naam") is True:
+        return "factuur_op_naam"
+    if bedrag < FACTUUR_GRENS:
+        return "bon_voldoende"
+    if bon.get("op_naam") is None:
+        return "onbekend"
+    return "bon_zonder_naam"
+
+
+def analyseer_bonnenmap(bonnen_map: Path, transacties: list, voortgang_callback=None, kenmerken: list = None,
+                        gebruik_overrides: bool = True) -> dict:
     uitgaven = [t for t in transacties if t["richting"] == "uitgave"]
-    overrides = laad_overrides(bonnen_map)
+    overrides = laad_overrides(bonnen_map) if gebruik_overrides else {}
+    kenmerken = [k for k in (kenmerken or []) if k and str(k).strip()]
 
     geldige_ext = PDF_EXTENSIES | BEELD_EXTENSIES
     bon_paden = sorted({p.resolve() for p in bonnen_map.iterdir() if p.suffix.lower() in geldige_ext})
     bonnen = lees_bonnen_parallel(bon_paden, voortgang_callback)
 
-    zeker, onzeker, geen_match, onleesbaar = [], [], [], []
+    zeker, onzeker, geen_match, onleesbaar, zonder_naam = [], [], [], [], []
     gematchte_transacties = set()
 
     for bon in bonnen:
         override = overrides.get(bon["bestand"])
+        if not isinstance(override, dict):
+            override = None
         if override and override.get("genegeerd"):
             continue
         if override and override.get("forceer_nummer"):
-            bon["kandidaat_nummers"] = [override["forceer_nummer"]] + bon["kandidaat_nummers"]
+            bon["kandidaat_nummers"] = [str(override["forceer_nummer"])] + bon["kandidaat_nummers"]
+        bon["op_naam"] = staat_op_naam(bon["tekst"], kenmerken)
+        if override and "op_naam" in override:  # handmatig: {"bon.pdf": {"op_naam": true}}
+            bon["op_naam"] = bool(override["op_naam"])
+
+        vaste_ids = override.get("tx_id") if override else None
+        if vaste_ids:
+            # Vaste koppeling (handmatig of eerder door Kwartaal vastgelegd): geen heuristiek nodig,
+            # ook niet voor een scan zonder leesbare tekst.
+            if not isinstance(vaste_ids, list):
+                vaste_ids = [vaste_ids]
+            alle_uitgaven = [t for t in transacties if t["richting"] == "uitgave"]  # incl. kredietfacturen
+            treffers = [t for t in alle_uitgaven if t.get("tx_id") in vaste_ids]
+            treffers_uitgaven = [t for t in treffers if not t.get("is_kredietfactuur")]
+            zekerheid, gebruikt_nummer = ("zeker", "vaste koppeling") if treffers else (None, None)
+            if treffers:
+                for t in treffers:
+                    gematchte_transacties.add(id(t))
+                bon["bewijs"] = bewijs_status(bon, treffers_uitgaven or treffers)
+                if bon["bewijs"] == "bon_zonder_naam":
+                    zonder_naam.append((bon, treffers))
+                zeker.append((bon, treffers, gebruikt_nummer))
+            else:
+                geen_match.append(bon)
+            continue
 
         if not bon["tekst_gevonden"] and not bon["kandidaat_nummers"]:
             onleesbaar.append(bon)
@@ -340,6 +514,10 @@ def analyseer_bonnenmap(bonnen_map: Path, transacties: list, voortgang_callback=
         treffers, zekerheid, gebruikt_nummer = match_bon(bon, uitgaven)
         for t in treffers:
             gematchte_transacties.add(id(t))
+        if zekerheid in ("zeker", "onzeker"):
+            bon["bewijs"] = bewijs_status(bon, treffers)
+            if bon["bewijs"] == "bon_zonder_naam":
+                zonder_naam.append((bon, treffers))
         if zekerheid == "zeker":
             zeker.append((bon, treffers, gebruikt_nummer))
         elif zekerheid == "onzeker":
@@ -362,6 +540,10 @@ def analyseer_bonnenmap(bonnen_map: Path, transacties: list, voortgang_callback=
         return bedrag - bedrag / (1 + pct / 100)
 
     btw_risico = round(sum(_btw_bedrag(t) for t in uitgaven_zonder_bon), 2)
+    # Btw op gematchte bonnen boven de factuurgrens waar jouw naam niet op staat: bij een
+    # controle is dat net zo kwetsbaar als een ontbrekende bon.
+    naam_txs = {id(t): t for _, treffers in zonder_naam for t in treffers}
+    btw_risico_naam = round(sum(_btw_bedrag(t) for t in naam_txs.values()), 2)
 
     return {
         "zeker": zeker,
@@ -369,6 +551,9 @@ def analyseer_bonnenmap(bonnen_map: Path, transacties: list, voortgang_callback=
         "geen_match": geen_match,
         "onleesbaar": onleesbaar,
         "uitgaven_zonder_bon": uitgaven_zonder_bon,
+        "zonder_naam": zonder_naam,
         "totaal_bonnen": len(bonnen),
         "btw_risico": btw_risico,
+        "btw_risico_naam": btw_risico_naam,
+        "kenmerken_ingesteld": bool(kenmerken),
     }

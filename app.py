@@ -201,7 +201,11 @@ class Api:
         try:
             from bonnen_matcher import analyseer_bonnenmap
             self.bonnen_map = Path(map_pad)
-            analyse = analyseer_bonnenmap(self.bonnen_map, self.model.transacties)
+            config = self.model.config
+            kenmerken = list(config.get("factuur_kenmerken", []))
+            if config.get("bedrijfsnaam"):
+                kenmerken.append(config["bedrijfsnaam"])
+            analyse = analyseer_bonnenmap(self.bonnen_map, self.model.transacties, kenmerken=kenmerken)
             self.bonnen_analyse = analyse
             return {"ok": True, "data": bonnen_naar_dict(analyse)}
         except Exception:

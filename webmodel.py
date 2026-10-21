@@ -41,6 +41,7 @@ def tx_dict(t: dict) -> dict:
         "is_verlegd": bool(t.get("is_verlegd")),
         "is_kredietfactuur": bool(t.get("is_kredietfactuur")),
         "auto_nul": bool(t.get("btw_auto_nul")),
+        "nieuw": bool(t.get("is_nieuwe_leverancier")),
         # Handmatig bewerkte velden met hun oorspronkelijke waarde (voor markering + herstel).
         "bewerkt": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in (t.get("bewerkt") or {}).items()},
     }
@@ -190,6 +191,7 @@ def bonnen_naar_dict(analyse: dict) -> dict:
         "tx_datum": _iso(t["datum"]),
         "tx_naam": t["naam"],
         "bedrag": round(t.get("bedrag_effect", t["bedrag"]), 2),
+        "bewijs": bon.get("bewijs", "onbekend"),
     } for bon, treffers, gebruikt_nummer in analyse["zeker"] for t in treffers]
 
     onzeker = [{
@@ -199,7 +201,15 @@ def bonnen_naar_dict(analyse: dict) -> dict:
         "tx_datum": _iso(t["datum"]),
         "tx_naam": t["naam"],
         "tx_bedrag": round(t.get("bedrag_effect", t["bedrag"]), 2),
+        "bewijs": bon.get("bewijs", "onbekend"),
     } for bon, treffers in analyse["onzeker"] for t in treffers]
+
+    zonder_naam = [{
+        "bon": bon["bestand"],
+        "tx_datum": _iso(t["datum"]),
+        "tx_naam": t["naam"],
+        "bedrag": round(t.get("bedrag_effect", t["bedrag"]), 2),
+    } for bon, treffers in analyse.get("zonder_naam", []) for t in treffers]
 
     geen_match = [{
         "bon": bon["bestand"],
@@ -219,18 +229,22 @@ def bonnen_naar_dict(analyse: dict) -> dict:
     return {
         "totaal_bonnen": analyse["totaal_bonnen"],
         "btw_risico": analyse["btw_risico"],
+        "btw_risico_naam": analyse.get("btw_risico_naam", 0.0),
+        "kenmerken_ingesteld": bool(analyse.get("kenmerken_ingesteld")),
         "tellingen": {
             "zeker": len(analyse["zeker"]),
             "onzeker": len(analyse["onzeker"]),
             "geen_match": len(analyse["geen_match"]),
             "onleesbaar": len(analyse["onleesbaar"]),
             "zonder_bon": len(analyse["uitgaven_zonder_bon"]),
+            "zonder_naam": len(analyse.get("zonder_naam", [])),
         },
         "zeker": zeker,
         "onzeker": onzeker,
         "geen_match": geen_match,
         "onleesbaar": onleesbaar,
         "zonder_bon": zonder_bon,
+        "zonder_naam": zonder_naam,
     }
 
 
@@ -275,6 +289,22 @@ def model_naar_dict(model) -> dict:
 
     r = model.resultaat()
     periode = _periode_dict(model)
+    # Nieuwe leveranciers dit kwartaal: de eerste controlestap (btw is daar een gok).
+    nieuw_per = {}
+    for t in model.transacties:
+        if t.get("is_nieuwe_leverancier"):
+            nieuw_per.setdefault(t["leverancier"], []).append(t)
+    nieuwe_leveranciers = sorted(([{
+        "leverancier": lev,
+        "aantal": len(txs),
+        "totaal": round(sum(x.get("bedrag_effect", x["bedrag"]) for x in txs), 2),
+        "richting": "inkomst" if all(x["richting"] == "inkomst" for x in txs) else "uitgave",
+        "btw_pct": sorted({x["btw_pct"] for x in txs}),
+        # Bevestigd = bewust gekozen (override of "onthoud voor leverancier") of door een regel bepaald.
+        "bevestigd": all(x["btw_bron"] in ("override", "nul-auto", "verlegd") for x in txs)
+                     or bool((model.geheugen.get(lev) or {}).get("bevestigd")),
+        "eerste_id": txs[0].get("tx_id"),
+    } for lev, txs in nieuw_per.items()]), key=lambda n: -abs(n["totaal"]))
     buiten_beschouwing = (
         r["aantal_prive"] + r["aantal_belastingdienst"] + r["aantal_uitgesloten"]
         + r["aantal_buiten_kwartaal"]
@@ -299,6 +329,7 @@ def model_naar_dict(model) -> dict:
         "investeringen": investeringen,
         "investering_drempel": round(model.config["investering_drempel"], 2),
         "leveranciers": _leveranciers_overzicht(uitgaven_ruw),
+        "nieuwe_leveranciers": nieuwe_leveranciers,
         "totalen": tot,
         "winst": round(tot["inkomsten_excl"] - tot["uitgaven_excl"], 2),
         "btw_saldo": round(tot["inkomsten_btw"] - tot["uitgaven_btw"], 2),
@@ -316,6 +347,7 @@ def model_naar_dict(model) -> dict:
             "buiten_kwartaal": r["aantal_buiten_kwartaal"],
             "investeringen": r["aantal_investeringen"],
             "verlegd": r["aantal_verlegd"],
+            "nieuwe_leveranciers": r["aantal_nieuwe_leveranciers"],
         },
         "geen_periode_gevonden": r["geen_periode_gevonden"],
     }

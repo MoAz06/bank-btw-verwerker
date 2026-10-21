@@ -23,6 +23,7 @@ from leveranciers import (
 
 DEFAULT_CONFIG = {
     "bedrijfsnaam": "",
+    "factuur_kenmerken": [],
     "eigen_rekeningen": {"NL76INGB0003298592", "NL29RABO0366729276"},
     "eigen_naam_patronen": ["zakelijke oranje spaarrekening"],
     "nul_btw_patronen": [
@@ -107,6 +108,8 @@ def laad_config(script_dir: Path = None) -> dict:
         data = json.load(f)
     return {
         "bedrijfsnaam": str(data.get("bedrijfsnaam", "") or "").strip(),
+        # Teksten waaraan je herkent dat een factuur op jouw naam staat (bedrijfsnaam, btw-id, kvk, adres).
+        "factuur_kenmerken": [str(p).strip() for p in data.get("factuur_kenmerken", []) if str(p).strip()],
         "eigen_rekeningen": {iban.replace(" ", "").upper() for iban in data.get("eigen_rekeningen", [])},
         "eigen_naam_patronen": [p.lower() for p in data.get("eigen_naam_patronen", [])],
         "nul_btw_patronen": [p.lower() for p in data.get("nul_btw_patronen", DEFAULT_CONFIG["nul_btw_patronen"])],
@@ -278,6 +281,9 @@ class Boekhouding:
         self.geldige_jaarmaanden = bepaal_geldige_jaarmaanden(bestandsnaam or "")
         self.kwartaal_venster = bepaal_kwartaal_venster(bestandsnaam or "")
         self.nieuwe_leveranciers = 0
+        # Leveranciers die vóór dit bestand al bekend waren. Alles wat daar niet in zit is
+        # "nieuw dit kwartaal" en verdient een btw-controle (standaard 21% is een gok).
+        self.bekende_leveranciers = set(geheugen.keys())
         self.bereken()
 
     def _binnen_kwartaal(self, t) -> bool:
@@ -381,6 +387,7 @@ class Boekhouding:
                 **t,
                 "tx_id": tid,
                 "bewerkt": bewerkt,
+                "is_nieuwe_leverancier": leverancier not in self.bekende_leveranciers,
                 "richting": richting,
                 "is_kredietfactuur": is_krediet,
                 "factuur": omschrijving,
@@ -451,6 +458,7 @@ class Boekhouding:
             "aantal_investeringen": sum(1 for t in self.transacties if t.get("is_investering")),
             "aantal_verlegd": sum(1 for t in self.transacties if t.get("is_verlegd")),
             "nieuwe_leveranciers": self.nieuwe_leveranciers,
+            "aantal_nieuwe_leveranciers": len({t["leverancier"] for t in self.transacties if t.get("is_nieuwe_leverancier")}),
             "geen_periode_gevonden": self.geldige_jaarmaanden is None,
             "kor_actief": self.config["kor_actief"],
             "winst": a["winst"],

@@ -4,6 +4,9 @@
   "bedrijfsnaam": "Voorbeeldbedrijf B.V.",
   "_bedrijfsnaam": "Optioneel. Wordt alleen lokaal in de Kwartaal-interface getoond.",
 
+  "factuur_kenmerken": ["Voorbeeldbedrijf", "NL001234567B01", "12345678", "Voorbeeldstraat 1"],
+  "_factuur_kenmerken": "Teksten waaraan Kwartaal herkent dat een bon een factuur OP JOUW NAAM is: je bedrijfsnaam, btw-id, KvK-nummer, adres. Boven 100 euro incl. btw eist de Belastingdienst zo'n factuur; een kassabon is dan niet genoeg. Leeg laten = niet controleren.",
+
   "eigen_rekeningen": ["NL00BANK0123456789"],
   "_eigen_rekeningen": "IBAN's die als prive gelden (bv. je eigen spaarrekening) - transacties naar/van deze rekeningen tellen nergens mee.",
 

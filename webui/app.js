@@ -256,6 +256,7 @@ function btwBronTekst(bron) {
 
 function transactieKenmerken(r) {
   return [
+    r.nieuw ? "Nieuwe leverancier" : null,
     r.is_investering ? "Investering" : null,
     r.is_verlegd ? "Verlegde btw" : null,
     r.is_kredietfactuur ? "Kredietfactuur" : null,
@@ -342,7 +343,10 @@ function bouwTransactieTabel(rijen) {
     const hoofd = el("tr", { class: "transactie-hoofd", "data-id": r.id }, [
       el("td", { class: "tx-datum", text: datum(r.datum) }),
       el("td", { class: "tx-omschrijving" }, openKnop),
-      el("td", { class: "tx-leverancier" }, bewerkbaar(r, "leverancier")),
+      el("td", { class: "tx-leverancier" }, [
+        bewerkbaar(r, "leverancier"),
+        r.nieuw ? el("span", { class: "tx-markering", text: "Nieuw dit kwartaal" }) : null,
+      ]),
       el("td", { class: "tx-factuur" }, bewerkbaar(r, "factuur")),
       soort,
       el("td", { class: "getal tx-bedrag" }, bewerkbaar(r, "bedrag", { toon: (x) => geld(getoondBedrag(x)) })),
@@ -377,6 +381,7 @@ function bouwNietIngedeeld(rijen) {
 
 function paneelTransacties(d) {
   const nietIngedeeld = d.niet_ingedeeld || [];
+  const nieuweLev = (d.tellingen && d.tellingen.nieuwe_leveranciers) || 0;
   if (transactieState.filter === "niet_ingedeeld" && !nietIngedeeld.length) {
     transactieState.filter = "alle";
   }
@@ -391,6 +396,7 @@ function paneelTransacties(d) {
     ["alle", "Alle transacties"],
     ["inkomst", "Inkomsten"],
     ["uitgave", "Uitgaven"],
+    ...(nieuweLev ? [["nieuw", `Nieuwe leveranciers (${nieuweLev})`]] : []),
     ["bijzonder", "Bijzonderheden"],
     ["aangepast", "Aangepast"],
     ...(nietIngedeeld.length ? [["niet_ingedeeld", `Niet ingedeeld (${nietIngedeeld.length})`]] : []),
@@ -421,7 +427,8 @@ function paneelTransacties(d) {
           transactieState.filter === "alle"
           || r.richting === transactieState.filter
           || (transactieState.filter === "bijzonder" && transactieKenmerken(r).length > 0)
-          || (transactieState.filter === "aangepast" && r.btw_bron === "override");
+          || (transactieState.filter === "nieuw" && r.nieuw)
+          || (transactieState.filter === "aangepast" && (r.btw_bron === "override" || Object.keys(r.bewerkt || {}).length > 0));
         return tekstMatch && filterMatch;
       });
       teller.textContent = `${rijen.length} van ${d.transacties.length} transacties`;
@@ -514,8 +521,8 @@ function maakActies(d) {
       actie: "Controleer bonnen",
       tab: "bonnen",
     });
-  } else if (bonnenData.tellingen.zonder_bon || bonnenData.tellingen.onzeker || bonnenData.tellingen.geen_match) {
-    const open = bonnenData.tellingen.zonder_bon + bonnenData.tellingen.onzeker + bonnenData.tellingen.geen_match;
+  } else if (bonnenData.tellingen.zonder_bon || bonnenData.tellingen.onzeker || bonnenData.tellingen.geen_match || bonnenData.tellingen.zonder_naam) {
+    const open = bonnenData.tellingen.zonder_bon + bonnenData.tellingen.onzeker + bonnenData.tellingen.geen_match + (bonnenData.tellingen.zonder_naam || 0);
     acties.push({
       niveau: "risico",
       titel: `${open} ${open === 1 ? "boncontrole staat" : "boncontroles staan"} open`,
@@ -548,7 +555,20 @@ function maakActies(d) {
       titel: `${d.leveranciers.afwijkingen.length} opvallende ${d.leveranciers.afwijkingen.length === 1 ? "betaling" : "betalingen"}`,
       context: "Deze bedragen wijken af van het gebruikelijke patroon.",
       actie: "Bekijken",
-      tab: "leveranciers",
+      tab: "opvallend",
+    });
+  }
+  // Eerste controlestap: leveranciers die je dit kwartaal voor het eerst betaalt. Daar is de
+  // btw een gok (standaard 21%), dus die staan bovenaan.
+  const nieuw = (d.nieuwe_leveranciers || []).filter((n) => !n.bevestigd);
+  if (nieuw.length) {
+    acties.unshift({
+      niveau: "waarschuwing",
+      titel: `${nieuw.length} nieuwe ${nieuw.length === 1 ? "leverancier" : "leveranciers"} dit kwartaal`,
+      context: "Nieuwe leveranciers krijgen standaard 21% btw. Controleer per regel of dat klopt en vink \"gebruik deze keuze voortaan\" aan.",
+      actie: "Controleer btw",
+      tab: "transacties",
+      filter: "nieuw",
     });
   }
   return acties;
@@ -559,6 +579,8 @@ function openActie(item) {
     transactieState.filter = item.filter;
     transactieState.zoek = "";
   }
+  if (item.zoek !== undefined) transactieState.zoek = item.zoek;
+  if (item.openId) transactieState.openId = item.openId;
   toonTab(item.tab);
   requestAnimationFrame(() => {
     const doel = item.doel ? document.getElementById(item.doel) : document.getElementById("panel-" + item.tab);
@@ -739,49 +761,9 @@ function bewerkCel(veld, opties = {}) {
 }
 
 /* Btw-keuze in een rapporttabel: gewone tabelcel (geen flex-cel zoals in de transactietabel). */
-function btwBewerkCel(r) {
-  const wrap = el("span", { class: "bewerk" + (r.btw_bron === "override" ? " -bewerkt" : "") }, maakBtwSelect(r));
-  if (r.btw_bron === "override") {
-    const h = el("button", { class: "herstel", type: "button", title: "Herstel automatische btw",
-      "aria-label": `Herstel automatische btw voor ${r.naam}` }, icoon("herstel"));
-    h.addEventListener("click", () => herstelBtw(r.id));
-    wrap.append(h);
-  }
-  return el("td", { class: "getal" }, wrap);
-}
-
-function richtingKolommen() {
-  return [
-    { key: "datum", label: "Datum", render: datum },
-    { key: "naam", label: "Naam", cel: bewerkCel("naam") },
-    { key: "leverancier", label: "Leverancier", cel: bewerkCel("leverancier") },
-    { key: "factuur", label: "Factuur", cel: bewerkCel("factuur") },
-    { key: "btw_pct", label: "Btw %", getal: true, cel: btwBewerkCel },
-    { key: "bedrag", label: "Bedrag incl.", getal: true, cel: (r) => {
-      const klasse = r.richting === "inkomst" ? "bedrag-plus" : "bedrag-min";
-      return el("td", { class: "getal " + klasse }, bewerkbaar(r, "bedrag", { toon: (x) => geld(x.bedrag) }));
-    } },
-    { key: "excl", label: "Excl. btw", getal: true, render: geld },
-    { key: "btw", label: "Btw", getal: true, render: geld },
-  ];
-}
-
-function paneelRichting(rijen, titel) {
-  if (!rijen.length) return leegMelding(`Geen ${titel} in deze periode.`);
-  const som = (v) => rijen.reduce((a, r) => a + r[v], 0);
-  const voet = [
-    el("td", { colspan: 5 }, el("strong", { text: "Totaal" })),
-    el("td", { class: "getal" }, el("strong", { text: geld(som("bedrag")) })),
-    el("td", { class: "getal" }, el("strong", { text: geld(som("excl")) })),
-    el("td", { class: "getal" }, el("strong", { text: geld(som("btw")) })),
-  ];
-  return bouwTabel(richtingKolommen(), rijen, { caption: `${rijen.length} ${titel}`, voet });
-}
-
 function paneelInvesteringen(d) {
   const kinderen = [uitleg(
-    `Grote uitgaven vanaf ${geld(d.investering_drempel)} excl. btw — kandidaten om te controleren. ` +
-    "Een bedrijfsmiddel dat jaren meegaat schrijf je af; materialen zijn gewone kosten. Overleg met je boekhouder.")];
+    `Uitgaven vanaf ${geld(d.investering_drempel)} excl. btw. Kies per regel: bedrijfsmiddel dat jaren meegaat (afschrijven) of gewone kosten. Bij twijfel: boekhouder.`)];
   if (!d.investeringen.length) {
     kinderen.push(leegMelding("Geen investeringen boven de drempel in deze periode."));
     return el("div", { class: "investeringen-paneel" }, kinderen);
@@ -804,32 +786,46 @@ function paneelInvesteringen(d) {
         el("td", { colspan: 2 }),
       ] }
   ));
-  kinderen.push(el("p", { class: "table-note", text: "Vinkje uit? Dan telt de uitgave als gewone kosten. Een uitgave onder de drempel markeer je als investering via de Transacties-tab." }));
-  kinderen.push(el("aside", { class: "fiscale-notitie" }, [
-    el("strong", { text: "Fiscale context" }),
-    el("p", { text:
-      "De KIA wordt bepaald over het totale kwalificerende investeringsbedrag in het kalenderjaar. " +
-      "Gebruik deze selectie als controlelijst en laat de definitieve kwalificatie door je boekhouder beoordelen." }),
-  ]));
+  kinderen.push(el("p", { class: "table-note", text: "Vinkje uit? Dan telt de uitgave als gewone kosten. Een uitgave onder de drempel markeer je als investering via de Transacties-tab. De KIA gaat over het hele kalenderjaar; laat de definitieve kwalificatie door je boekhouder beoordelen." }));
   return el("div", { class: "investeringen-paneel" }, kinderen);
 }
 
-function paneelLeveranciers(d) {
+/* Opvallend: alleen wat om een keuze vraagt. Nieuwe leveranciers (klopt de btw?) en bedragen
+   die afwijken van wat je normaal bij die leverancier betaalt (klopt de boeking?). */
+function paneelOpvallend(d) {
+  const nieuw = d.nieuwe_leveranciers || [];
   const lv = d.leveranciers;
-  const kinderen = [
-    uitleg("Je uitgaven opgeteld per leverancier. Opvallende bedragen wijken sterk af van wat je normaal bij die leverancier betaalt — even checken."),
-    bouwTabel(
+  const kinderen = [uitleg(
+    "Leveranciers die je dit kwartaal voor het eerst betaalt krijgen standaard 21% btw; dat is een gok. En bedragen die sterk afwijken van wat je normaal bij een leverancier betaalt verdienen een tweede blik.")];
+
+  kinderen.push(el("h2", { text: `Nieuwe leveranciers (${nieuw.length})` }));
+  if (nieuw.length) {
+    kinderen.push(bouwTabel(
       [
         { key: "leverancier", label: "Leverancier" },
-        { key: "aantal", label: "Aantal", getal: true },
+        { key: "aantal", label: "Regels", getal: true },
         { key: "totaal", label: "Totaal incl.", getal: true, render: geld },
-        { key: "gemiddeld", label: "Gemiddeld", getal: true, render: geld },
-        { key: "eerste", label: "Eerste", render: datum },
-        { key: "laatste", label: "Laatste", render: datum },
+        { key: "btw_pct", label: "Btw nu", getal: true, render: (v) => v.map((pct) => pct + "%").join(" / ") },
+        { key: "bevestigd", label: "Status", cel: (r) => el("td", {}, el("span", {
+          class: "pil " + (r.bevestigd ? "pil-inkomst" : "pil-let-op"),
+          text: r.bevestigd ? "Bevestigd" : "Controleer btw",
+        })) },
+        { key: "eerste_id", label: "", cel: (r) => {
+          const knop = el("button", { class: "tekstknop", type: "button", text: "Bekijk regels" });
+          knop.addEventListener("click", () => openActie({ tab: "transacties", filter: "nieuw", zoek: r.leverancier }));
+          return el("td", {}, knop);
+        } },
       ],
-      lv.rijen
-    ),
-  ];
+      nieuw
+    ));
+    const alles = el("button", { class: "knop knop-compact", type: "button", text: "Controleer alle nieuwe leveranciers" });
+    alles.addEventListener("click", () => openActie({ tab: "transacties", filter: "nieuw" }));
+    kinderen.push(el("div", { class: "toolbar" }, alles));
+    kinderen.push(el("p", { class: "table-note", text: "Bevestigd = je hebt de btw zelf gekozen, of \"gebruik deze keuze voortaan\" aangevinkt. Volgend kwartaal kent Kwartaal de leverancier dan al." }));
+  } else {
+    kinderen.push(leegMelding("Geen nieuwe leveranciers dit kwartaal."));
+  }
+
   kinderen.push(el("h2", { text: `Opvallende bedragen (${lv.afwijkingen.length})` }));
   if (lv.afwijkingen.length) {
     kinderen.push(bouwTabel(
@@ -837,10 +833,16 @@ function paneelLeveranciers(d) {
         { key: "datum", label: "Datum", render: datum },
         { key: "leverancier", label: "Leverancier" },
         { key: "bedrag", label: "Bedrag", getal: true, render: geld },
-        { key: "mediaan", label: "Typisch (mediaan)", getal: true, render: geld },
+        { key: "mediaan", label: "Normaal (mediaan)", getal: true, render: geld },
+        { key: "id", label: "", cel: (r) => {
+          const knop = el("button", { class: "tekstknop", type: "button", text: "Bekijk regel" });
+          knop.addEventListener("click", () => openActie({ tab: "transacties", filter: "alle", zoek: "", openId: r.id, doel: "detail-" + r.id }));
+          return el("td", {}, knop);
+        } },
       ],
       lv.afwijkingen
     ));
+    kinderen.push(el("p", { class: "table-note", text: "Klopt het bedrag niet? Open de regel en corrigeer bedrag of btw; alles rekent direct door." }));
   } else {
     kinderen.push(leegMelding("Geen opvallende bedragen gevonden."));
   }
@@ -848,6 +850,13 @@ function paneelLeveranciers(d) {
 }
 
 let bonnenData = null;
+
+const BEWIJS_TEKST = {
+  factuur_op_naam: "Factuur op naam",
+  bon_voldoende: "Kassabon (voldoende onder € 100)",
+  bon_zonder_naam: "Kassabon, factuur op naam nodig",
+  onbekend: "Niet gecontroleerd",
+};
 
 function bonnenSectie(titel, klasse, rijen, kolommen) {
   const kinderen = [el("h2", { text: `${titel} (${rijen.length})` })];
@@ -907,20 +916,39 @@ function paneelBonnen() {
       { cat: "Geen match", n: tel.geen_match },
       { cat: "Onleesbaar", n: tel.onleesbaar },
       { cat: "Uitgaven zonder bon", n: tel.zonder_bon },
+      { cat: "Bon zonder je naam, factuur nodig (vanaf € 100)", n: tel.zonder_naam || 0 },
     ],
     { caption: `${b.totaal_bonnen} bonnen verwerkt` }
   );
 
+  // Bewijs: een kassabon volstaat onder € 100; daarboven moet jouw naam op de factuur staan.
+  const bewijsKolom = { key: "bewijs", label: "Bewijs", cel: (r) => el("td", {}, el("span", {
+    class: "pil " + ({ factuur_op_naam: "pil-inkomst", bon_voldoende: "pil-uitgave", bon_zonder_naam: "pil-let-op", onbekend: "pil-uitgave" }[r.bewijs] || "pil-uitgave"),
+    text: BEWIJS_TEKST[r.bewijs] || BEWIJS_TEKST.onbekend,
+  })) };
+  const naamNotitie = b.kenmerken_ingesteld
+    ? (b.btw_risico_naam > 0
+        ? `Op gematchte bonnen vanaf € 100 zonder jouw naam staat ${geld(b.btw_risico_naam)} btw. Vraag daar een factuur op naam voor op.`
+        : "Alle gematchte bonnen vanaf € 100 zijn facturen op jouw naam.")
+    : "Of een bon een factuur op jouw naam is wordt nog niet gecontroleerd: vul \"factuur_kenmerken\" (bedrijfsnaam, btw-id, KvK) in config.json.";
+  risicoBlok.append(el("p", { class: "risico-notitie", text: naamNotitie }));
+
   const secties = [
+    bonnenSectie("Factuur op naam nodig", "-let-op", b.zonder_naam || [], [
+      { key: "bon", label: "Bon" }, { key: "tx_datum", label: "Transactiedatum", render: datum },
+      { key: "tx_naam", label: "Naam" }, { key: "bedrag", label: "Bedrag", getal: true, render: geld },
+    ]),
     bonnenSectie("Zeker gematcht", "-goed", b.zeker, [
       { key: "bon", label: "Bon" }, { key: "herkend", label: "Herkend nummer" },
       { key: "tx_datum", label: "Transactiedatum", render: datum }, { key: "tx_naam", label: "Naam" },
       { key: "bedrag", label: "Bedrag", getal: true, render: geld },
+      bewijsKolom,
     ]),
     bonnenSectie("Controleer — onzekere match", "-let-op", b.onzeker, [
       { key: "bon", label: "Bon" }, { key: "bon_bedrag", label: "Bedrag (bon)", getal: true, render: (v) => (v == null ? "" : geld(v)) },
       { key: "bon_datum", label: "Datum (bon)", render: datum }, { key: "tx_naam", label: "Mogelijke naam" },
       { key: "tx_bedrag", label: "Mogelijk bedrag", getal: true, render: geld },
+      bewijsKolom,
     ]),
     bonnenSectie("Geen match gevonden", "-slecht", b.geen_match, [
       { key: "bon", label: "Bon" }, { key: "kandidaten", label: "Kandidaat-nummers" },
@@ -965,14 +993,14 @@ const TABS = [
   { key: "transacties", groep: "werk", label: "Transacties", omschrijving: "Zoek bankregels, controleer details en pas btw toe.", render: paneelTransacties,
     telling: (d) => (d.niet_ingedeeld || []).length },
   { key: "bonnen", groep: "werk", label: "Bonnen", omschrijving: "Koppel bewijsstukken aan de bijbehorende uitgaven.", render: paneelBonnen,
-    telling: () => bonnenData ? bonnenData.tellingen.zonder_bon + bonnenData.tellingen.onzeker + bonnenData.tellingen.geen_match : 0 },
+    telling: () => bonnenData ? bonnenData.tellingen.zonder_bon + bonnenData.tellingen.onzeker + bonnenData.tellingen.geen_match + (bonnenData.tellingen.zonder_naam || 0) : 0 },
   { key: "aangifte", groep: "werk", label: "Btw-aangifte", omschrijving: "De rubrieken voor Mijn Belastingdienst Zakelijk.", render: paneelAangifte },
-  { key: "inkomsten", groep: "rapporten", label: "Inkomsten", omschrijving: "Alle opgenomen inkomsten in deze periode.", render: (d) => paneelRichting(d.inkomsten, "inkomsten") },
-  { key: "uitgaven", groep: "rapporten", label: "Uitgaven", omschrijving: "Alle opgenomen zakelijke uitgaven.", render: (d) => paneelRichting(d.uitgaven, "uitgaven") },
-  { key: "investeringen", groep: "rapporten", label: "Investeringen", omschrijving: "Uitgaven die mogelijk als bedrijfsmiddel gelden.", render: paneelInvesteringen,
+  // Rapporten: alleen wat een keuze oplevert. Inkomsten en uitgaven als lijst staan onder
+  // Transacties (filter) en in de Excel.
+  { key: "investeringen", groep: "rapporten", label: "Investeringen", omschrijving: "Afschrijven of gewone kosten? Kies per uitgave.", render: paneelInvesteringen,
     telling: (d) => d.investeringen.length },
-  { key: "leveranciers", groep: "rapporten", label: "Leveranciers", omschrijving: "Uitgavenpatronen en opvallende bedragen.", render: paneelLeveranciers,
-    telling: (d) => d.leveranciers.afwijkingen.length },
+  { key: "opvallend", groep: "rapporten", label: "Opvallend", omschrijving: "Nieuwe leveranciers en bedragen die afwijken.", render: paneelOpvallend,
+    telling: (d) => (d.nieuwe_leveranciers || []).filter((n) => !n.bevestigd).length + d.leveranciers.afwijkingen.length },
 ];
 
 let huidigeData = null;

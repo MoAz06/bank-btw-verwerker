@@ -135,4 +135,5 @@ def onthoud_btw(geheugen: dict, leverancier: str, btw_pct: int):
     if not leverancier:
         return
     bestaand = geheugen.get(leverancier, {})
-    geheugen[leverancier] = {**bestaand, "btw": int(btw_pct)}
+    # "bevestigd": de gebruiker heeft dit tarief bewust gekozen (niet alleen automatisch ingevuld).
+    geheugen[leverancier] = {**bestaand, "btw": int(btw_pct), "bevestigd": True}

@@ -411,6 +411,7 @@ def bouw_bonnencontrole_sheet(wb: Workbook, analyse: dict):
         ("Geen match", len(analyse["geen_match"])),
         ("Onleesbaar", len(analyse["onleesbaar"])),
         ("Uitgaven zonder bon", len(analyse["uitgaven_zonder_bon"])),
+        ("Bon zonder je naam, factuur nodig (vanaf EUR 100)", len(analyse.get("zonder_naam", []))),
     ]
     for i, (naam, aantal) in enumerate(kerncijfers):
         ws.cell(row=kern_start + i, column=1, value=naam)
@@ -429,17 +430,24 @@ def bouw_bonnencontrole_sheet(wb: Workbook, analyse: dict):
         "of houd er rekening mee bij je 5b."
     )).font = Font(italic=True, color="595959")
     ws.merge_cells(start_row=risico_rij + 2, start_column=1, end_row=risico_rij + 2, end_column=5)
+    risico_naam = analyse.get("btw_risico_naam", 0)
+    ws.cell(row=risico_rij + 3, column=1, value="Btw op bonnen zonder jouw naam (vanaf EUR 100 is een factuur op naam vereist):").font = Font(bold=True)
+    rn = ws.cell(row=risico_rij + 3, column=3, value=risico_naam)
+    rn.number_format = GELD_FORMAAT
+    rn.font = Font(bold=True, color=(KLEUR_SLECHT_FONT if risico_naam > 0 else KLEUR_GOED_FONT))
 
-    rij = risico_rij + 4
+    rij = risico_rij + 5
 
+    from bonnen_matcher import BEWIJS_TEKST
     zeker_rijen = [
-        (bon["bestand"], gebruikt_nummer or "(bedrag + datum uniek)", t["datum"], t["naam"], t["bedrag"])
+        (bon["bestand"], gebruikt_nummer or "(bedrag + datum uniek)", t["datum"], t["naam"], t["bedrag"],
+         BEWIJS_TEKST.get(bon.get("bewijs", "onbekend"), "Niet gecontroleerd"))
         for bon, treffers, gebruikt_nummer in analyse["zeker"]
         for t in treffers
     ]
     rij = tabel_sectie(
         rij, "ZEKER GEMATCHT", KLEUR_ZEKER, KLEUR_ZEKER_RIJ,
-        ["Bon", "Herkend nummer", "Transactiedatum", "Transactienaam", "Bedrag"], zeker_rijen, "BonZeker",
+        ["Bon", "Herkend nummer", "Transactiedatum", "Transactienaam", "Bedrag", "Bewijs"], zeker_rijen, "BonZeker",
     )
     rij += 2
 
@@ -481,7 +489,7 @@ def bouw_bonnencontrole_sheet(wb: Workbook, analyse: dict):
         ["Datum", "Naam", "Bedrag"], zonder_bon_rijen, "BonUitgavenZonderBon",
     )
 
-    for col, breedte in zip("ABCDEF", [38, 22, 16, 30, 16, 14]):
+    for col, breedte in zip("ABCDEF", [38, 22, 16, 30, 16, 30]):
         ws.column_dimensions[col].width = breedte
     return ws
 
