@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from berekening import bepaal_aangifte_info, bepaal_btw, excl_van
+from berekening import VERLEGGING_SOORTEN, bepaal_aangifte_info, bepaal_btw, bepaal_verlegging, excl_van
 from leveranciers import (
     laad_leveranciers_geheugen,
     normaliseer_leverancier,
@@ -31,6 +31,9 @@ DEFAULT_CONFIG = {
         "flexkracht", "unive het groene hart bemiddeling", "vwpfs",
     ],
     "verlegd_patronen": [],
+    "eu_verlegd_patronen": [],
+    "buiten_eu_verlegd_patronen": [],
+    "voorbelasting_vereist_bon": True,
     "uitsluit_patronen": ["lening", "aflossing"],
     "investering_drempel": 450.0,
     "geen_investering_leveranciers": [
@@ -114,6 +117,11 @@ def laad_config(script_dir: Path = None) -> dict:
         "eigen_naam_patronen": [p.lower() for p in data.get("eigen_naam_patronen", [])],
         "nul_btw_patronen": [p.lower() for p in data.get("nul_btw_patronen", DEFAULT_CONFIG["nul_btw_patronen"])],
         "verlegd_patronen": [p.lower() for p in data.get("verlegd_patronen", [])],
+        # Naar jou verlegde btw uit het buitenland: EU-inkoop (rubriek 4b) en buiten de EU (4a).
+        "eu_verlegd_patronen": [p.lower() for p in data.get("eu_verlegd_patronen", [])],
+        "buiten_eu_verlegd_patronen": [p.lower() for p in data.get("buiten_eu_verlegd_patronen", [])],
+        # Art. 15 Wet OB: aftrek alleen met een factuur. Uit = oude gedrag (elke uitgave telt mee).
+        "voorbelasting_vereist_bon": bool(data.get("voorbelasting_vereist_bon", True)),
         "uitsluit_patronen": [p.lower() for p in data.get("uitsluit_patronen", DEFAULT_CONFIG["uitsluit_patronen"])],
         "investering_drempel": float(data.get("investering_drempel", DEFAULT_CONFIG["investering_drempel"])),
         "geen_investering_leveranciers": data.get("geen_investering_leveranciers", DEFAULT_CONFIG["geen_investering_leveranciers"]),
@@ -159,8 +167,13 @@ def lees_csv(pad: Path) -> list:
 
 
 def tx_id(t: dict) -> str:
-    """Stabiel id per transactie (datum+bedrag+tegenrekening+mededeling), voor overrides."""
-    sleutel = f"{t['datum'].strftime('%Y%m%d')}|{t['bedrag']:.2f}|{t['tegenrekening']}|{t['mededelingen']}"
+    """Stabiel id per transactie (boekdatum+bedrag+tegenrekening+mededeling), voor overrides.
+
+    Altijd op de bankgegevens: een handmatige factuurdatum vervangt 'datum', maar het id
+    blijft op de boekdatum, anders raakt de correctie zichzelf kwijt.
+    """
+    boekdatum = t.get("boekdatum") or t["datum"]
+    sleutel = f"{boekdatum.strftime('%Y%m%d')}|{t['bedrag']:.2f}|{t['tegenrekening']}|{t['mededelingen']}"
     return hashlib.sha1(sleutel.encode("utf-8")).hexdigest()[:12]
 
 
@@ -260,7 +273,21 @@ def classificeer_richting(transactie: dict, omschrijving: str, geldige_jaarmaand
 
 
 # Velden die per transactie handmatig te overschrijven zijn (overrides.json).
-OVERRIDE_VELDEN = ("btw_pct", "richting", "is_investering", "uitgesloten", "bedrag", "naam", "leverancier", "factuur")
+OVERRIDE_VELDEN = ("btw_pct", "richting", "is_investering", "uitgesloten", "bedrag", "naam", "leverancier", "factuur",
+                   "factuurdatum", "verlegging", "bon_aanwezig")
+
+
+def parse_factuurdatum(waarde):
+    """'2026-03-28' of '28-03-2026' -> datetime, anders None."""
+    if isinstance(waarde, datetime):
+        return waarde
+    tekst = str(waarde or "").strip()
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(tekst, fmt)
+        except ValueError:
+            continue
+    return None
 BTW_VELDEN = OVERRIDE_VELDEN  # compat-alias
 
 
@@ -284,6 +311,13 @@ class Boekhouding:
         # Leveranciers die vóór dit bestand al bekend waren. Alles wat daar niet in zit is
         # "nieuw dit kwartaal" en verdient een btw-controle (standaard 21% is een gok).
         self.bekende_leveranciers = set(geheugen.keys())
+        # tx_id's waaraan een bon of factuur is gekoppeld (uit de bonnencontrole); bepaalt samen
+        # met de override 'bon_aanwezig' of de voorbelasting in 5b meetelt.
+        self.bonnen_ids = set()
+        self.bereken()
+
+    def zet_bonnen(self, tx_ids):
+        self.bonnen_ids = set(tx_ids or [])
         self.bereken()
 
     def _binnen_kwartaal(self, t) -> bool:
@@ -296,13 +330,28 @@ class Boekhouding:
         config, geheugen = self.config, self.geheugen
         aliassen = config["leverancier_aliassen"]
 
+        # Factuurstelsel (art. 13 en 15 Wet OB): het tijdvak volgt de factuurdatum. De boekdatum
+        # van de bank is alleen de standaardwaarde; een handmatige factuurdatum vervangt 'm
+        # voor alles wat volgt (kwartaalvenster, sortering, bonnenmatching, Excel).
+        ruwe_met_datum = []
+        for t in self.ruwe:
+            ovr = self.overrides.get(tx_id(t), {})
+            factuurdatum = parse_factuurdatum(ovr.get("factuurdatum")) if ovr.get("factuurdatum") else None
+            if factuurdatum:
+                ruwe_met_datum.append({**t, "boekdatum": t["datum"], "datum": factuurdatum, "factuurdatum": factuurdatum})
+            else:
+                ruwe_met_datum.append({**t, "boekdatum": t["datum"], "factuurdatum": None})
+
         # Boekingen buiten het herkende kwartaal (meestal de eerste dagen van het volgende
         # kwartaal die ING nog meeneemt) tellen nergens mee; ze horen in de volgende aangifte.
+        # Staat de factuur wél in dit kwartaal gedateerd, zet dan de factuurdatum: dan telt de regel mee.
         self.buiten_kwartaal = [
-            {**t, "tx_id": tx_id(t), "factuur": bepaal_omschrijving_tekst(t["mededelingen"])}
-            for t in self.ruwe if not self._binnen_kwartaal(t)
+            {**t, "tx_id": tx_id(t), "factuur": bepaal_omschrijving_tekst(t["mededelingen"]),
+             "bewerkt": ({"factuurdatum": t["boekdatum"]} if t.get("factuurdatum") else {})}
+            for t in ruwe_met_datum if not self._binnen_kwartaal(t)
         ]
-        binnen = [t for t in self.ruwe if self._binnen_kwartaal(t)]
+        binnen = [t for t in ruwe_met_datum if self._binnen_kwartaal(t)]
+        vereist_bon = config.get("voorbelasting_vereist_bon", True)
 
         self.aantal_prive = sum(1 for t in binnen if is_prive(t, config))
         self.aantal_belastingdienst = sum(
@@ -327,6 +376,8 @@ class Boekhouding:
             tid = tx_id(t)  # altijd op de ruwe bankregel, zodat correcties stabiel blijven
             ovr = self.overrides.get(tid, {})
             bewerkt = {}  # veld -> oorspronkelijke (automatische) waarde, voor herstellen in de UI
+            if t.get("factuurdatum"):
+                bewerkt["factuurdatum"] = t["boekdatum"]
 
             # Handmatig bedrag of naam: vervangt de bankwaarde voor alles wat volgt.
             if isinstance(ovr.get("bedrag"), (int, float)) and float(ovr["bedrag"]) > 0:
@@ -369,10 +420,14 @@ class Boekhouding:
                 bewerkt["leverancier"] = leverancier
                 leverancier = ovr["leverancier"].strip()
             btw_pct, btw_bron, is_verlegd, is_auto_nul = bepaal_btw(t, leverancier, config, geheugen)
+            verlegging = bepaal_verlegging(t, config) if is_verlegd else None
             if isinstance(ovr.get("btw_pct"), (int, float)):  # handmatige btw-correctie wint van alles
                 bewerkt["btw_pct"] = btw_pct
                 btw_pct, btw_bron, is_auto_nul = int(ovr["btw_pct"]), "override", int(ovr["btw_pct"]) == 0
-                is_verlegd = False
+                is_verlegd, verlegging = False, None
+            if ovr.get("verlegging") in VERLEGGING_SOORTEN:  # handmatige verlegging: 0% en verlegd
+                bewerkt["verlegging"] = verlegging
+                verlegging, is_verlegd, btw_pct, btw_bron, is_auto_nul = ovr["verlegging"], True, 0, "verlegd", False
             excl = excl_van(t["bedrag"], btw_pct)
             is_investering = (
                 richting == "uitgave" and not is_krediet
@@ -383,10 +438,28 @@ class Boekhouding:
                 bewerkt["is_investering"] = is_investering
                 is_investering = bool(ovr["is_investering"])
 
+            # Bewijs voor de aftrek (art. 15 lid 1 onder a Wet OB): gekoppelde bon uit de
+            # bonnencontrole, of handmatig bevestigd "factuur aanwezig". Zonder bewijs telt de
+            # btw niet mee in 5b (tenzij de config dat uitzet).
+            if tid in self.bonnen_ids:
+                bon_status = "gekoppeld"
+            elif ovr.get("bon_aanwezig") is True:
+                bon_status = "bevestigd"
+                bewerkt["bon_aanwezig"] = False
+            else:
+                bon_status = "ontbreekt"
+            aftrekbaar = (
+                richting != "uitgave" or is_krediet or btw_pct == 0 or not vereist_bon
+                or bon_status != "ontbreekt"
+            )
+
             verwerkt.append({
                 **t,
                 "tx_id": tid,
                 "bewerkt": bewerkt,
+                "verlegging": verlegging,
+                "bon_status": bon_status,
+                "aftrekbaar": aftrekbaar,
                 "is_nieuwe_leverancier": leverancier not in self.bekende_leveranciers,
                 "richting": richting,
                 "is_kredietfactuur": is_krediet,
@@ -455,6 +528,8 @@ class Boekhouding:
             "aantal_kredietfactuur": self.aantal_kredietfactuur,
             "aantal_buiten_periode": len(self.buiten_periode),
             "aantal_buiten_kwartaal": len(self.buiten_kwartaal),
+            "aantal_niet_onderbouwd": sum(
+                1 for t in self.transacties if t["richting"] == "uitgave" and not t.get("aftrekbaar", True)),
             "aantal_investeringen": sum(1 for t in self.transacties if t.get("is_investering")),
             "aantal_verlegd": sum(1 for t in self.transacties if t.get("is_verlegd")),
             "nieuwe_leveranciers": self.nieuwe_leveranciers,

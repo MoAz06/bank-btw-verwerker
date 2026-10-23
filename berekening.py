@@ -46,6 +46,22 @@ def totalen_per_richting(transacties: list) -> dict:
     }
 
 
+# Soorten verlegging en de aangifterubriek waarin de naar jou verlegde btw hoort
+# (Toelichting btw-aangifte 2026): binnenland -> 2a, EU-inkoop -> 4b, buiten de EU -> 4a.
+VERLEGGING_SOORTEN = ("binnenland", "eu", "buiten_eu")
+VERLEGGING_RUBRIEK = {"binnenland": "2a", "eu": "4b", "buiten_eu": "4a"}
+
+
+def bepaal_verlegging(transactie: dict, config: dict):
+    """Welke verlegging op een transactie van toepassing is volgens de config-patronen, of None."""
+    naam_lower = transactie["naam"].lower()
+    for soort, sleutel in (("binnenland", "verlegd_patronen"), ("eu", "eu_verlegd_patronen"),
+                           ("buiten_eu", "buiten_eu_verlegd_patronen")):
+        if any(patroon in naam_lower for patroon in config.get(sleutel, [])):
+            return soort
+    return None
+
+
 def bepaal_btw(transactie: dict, leverancier: str, config: dict, geheugen: dict):
     """Btw-percentage + herkomst voor een transactie.
 
@@ -56,7 +72,7 @@ def bepaal_btw(transactie: dict, leverancier: str, config: dict, geheugen: dict)
     """
     naam_lower = transactie["naam"].lower()
 
-    if any(patroon in naam_lower for patroon in config.get("verlegd_patronen", [])):
+    if bepaal_verlegging(transactie, config):
         return 0, "verlegd", True, False
 
     if any(patroon in naam_lower for patroon in config.get("nul_btw_patronen", [])):
@@ -94,15 +110,30 @@ def bepaal_rubrieken(transacties: list) -> dict:
     omzet_1b = round(sum(excl(t) for t in gewoon if t["btw_pct"] == 9), 2)
     btw_1b = round(sum(incl(t) - excl(t) for t in gewoon if t["btw_pct"] == 9), 2)
     verlegd_verkoop_excl = round(sum(excl(t) for t in inkomsten if t.get("is_verlegd")), 2)
-    verlegd_inkoop_excl = round(sum(excl(t) for t in uitgaven if t.get("is_verlegd")), 2)
-    # Verlegde inkoop: je geeft de btw aan in 4b en trekt 'm in 5b meteen weer af.
-    verlegd_inkoop_btw = round(verlegd_inkoop_excl * STANDAARD_BTW / 100, 2)
+
+    # Naar jou verlegde btw per rubriek: binnenland (onderaannemer) 2a, EU-inkoop 4b, buiten EU 4a.
+    # Je geeft de btw aan in die rubriek en trekt 'm in dezelfde aangifte in 5b weer af.
+    verlegd = {}
+    for soort, rubriek in VERLEGGING_RUBRIEK.items():
+        excl_som = round(sum(excl(t) for t in uitgaven if t.get("is_verlegd") and t.get("verlegging", "binnenland") == soort), 2)
+        verlegd[rubriek] = {"excl": excl_som, "btw": round(excl_som * STANDAARD_BTW / 100, 2)}
+    verlegd_inkoop_excl = round(sum(v["excl"] for v in verlegd.values()), 2)
+    verlegd_inkoop_btw = round(sum(v["btw"] for v in verlegd.values()), 2)
+
     # Rest van de omzet (0% of een afwijkend tarief) incl. de btw die daar eventueel op zit.
     overige_excl = round(tot["inkomsten_excl"] - omzet_1a - omzet_1b - verlegd_verkoop_excl, 2)
     overige_btw = round(tot["inkomsten_btw"] - btw_1a - btw_1b, 2)
 
+    # Voorbelasting (5b) alleen voor uitgaven waarvan de factuur of bon er is (art. 15 Wet OB):
+    # 'aftrekbaar' wordt door het model gezet. Kredietfacturen verlagen de aftrek altijd.
+    def aftrekbaar(t):
+        return t.get("aftrekbaar", True) or t.get("is_kredietfactuur") or incl(t) < 0
+
+    btw_onderbouwd = round(sum(incl(t) - excl(t) for t in uitgaven if aftrekbaar(t)), 2)
+    btw_niet_onderbouwd = round(sum(incl(t) - excl(t) for t in uitgaven if not aftrekbaar(t)), 2)
+
     btw_5a = round(tot["inkomsten_btw"] + verlegd_inkoop_btw, 2)
-    btw_5b = round(tot["uitgaven_btw"] + verlegd_inkoop_btw, 2)
+    btw_5b = round(btw_onderbouwd + verlegd_inkoop_btw, 2)
     btw_5c = round(btw_5a - btw_5b, 2)
     return {
         "omzet_1a": omzet_1a,
@@ -117,7 +148,17 @@ def bepaal_rubrieken(transacties: list) -> dict:
         "heeft_overige": overige_excl != 0 or overige_btw != 0,
         "verlegd_inkoop_excl": verlegd_inkoop_excl,
         "verlegd_inkoop_btw": verlegd_inkoop_btw,
-        "heeft_4b": verlegd_inkoop_excl != 0,
+        "verlegd_2a_excl": verlegd["2a"]["excl"],
+        "verlegd_2a_btw": verlegd["2a"]["btw"],
+        "heeft_2a": verlegd["2a"]["excl"] != 0,
+        "verlegd_4a_excl": verlegd["4a"]["excl"],
+        "verlegd_4a_btw": verlegd["4a"]["btw"],
+        "heeft_4a": verlegd["4a"]["excl"] != 0,
+        "verlegd_4b_excl": verlegd["4b"]["excl"],
+        "verlegd_4b_btw": verlegd["4b"]["btw"],
+        "heeft_4b": verlegd["4b"]["excl"] != 0,
+        "btw_onderbouwd": btw_onderbouwd,
+        "btw_niet_onderbouwd": btw_niet_onderbouwd,
         "btw_5a": btw_5a,
         "btw_5b": btw_5b,
         "btw_5c": btw_5c,

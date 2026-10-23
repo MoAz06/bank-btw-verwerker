@@ -572,12 +572,24 @@ def bouw_aangifte_sheet(wb: Workbook, aangifte: dict, totalen: dict, transacties
         rubriek("1e  Omzet waarbij btw naar afnemer is verlegd (0%)", vv_excl, 0)
     if rub["heeft_overige"]:
         rubriek("Overige omzet 0% / anders (controleer rubriek)", rub["overige_excl"], rub["overige_btw"])
+    # Naar jou verlegde btw per rubriek (Toelichting btw-aangifte 2026): binnenland 2a, buiten EU 4a, EU 4b.
+    if rub["heeft_2a"]:
+        rubriek("2a  Btw naar mij verlegd (binnenland, onderaanneming)", rub["verlegd_2a_excl"], rub["verlegd_2a_btw"])
+    if rub["heeft_4a"]:
+        rubriek("4a  Inkoop van buiten de EU (btw verlegd)", rub["verlegd_4a_excl"], rub["verlegd_4a_btw"])
     if rub["heeft_4b"]:
-        rubriek("4b  Btw naar mij verlegd (inkoop onderaanneming)", vi_excl, vi_btw)
+        rubriek("4b  Inkoop uit andere EU-landen (btw verlegd)", rub["verlegd_4b_excl"], rub["verlegd_4b_btw"])
 
     rubriek("5a  Verschuldigde omzetbelasting", None, btw_5a, vet=True)
     rubriek("5b  Voorbelasting (terug te vragen)", None, btw_5b, vet=True)
     rij_5c = rubriek("5c  Te betalen (+) / terug te vragen (-)", None, btw_5c, vet=True)
+    if rub["btw_niet_onderbouwd"]:
+        ws.cell(row=rij, column=1, value=(
+            f"Niet in 5b: {_formateer_euro(rub['btw_niet_onderbouwd'])} btw op uitgaven zonder gekoppelde bon of factuur "
+            "(art. 15 Wet OB: aftrek alleen met factuur). Koppel de bonnen in de app om dit mee te tellen."
+        )).font = Font(italic=True, color=KLEUR_SLECHT_FONT)
+        ws.merge_cells(start_row=rij, start_column=1, end_row=rij, end_column=3)
+        rij += 1
 
     ws.conditional_formatting.add(
         f"C{rij_5c}",
@@ -590,9 +602,9 @@ def bouw_aangifte_sheet(wb: Workbook, aangifte: dict, totalen: dict, transacties
                    fill=PatternFill("solid", start_color=KLEUR_GOED_BG, end_color=KLEUR_GOED_BG),
                    font=Font(color=KLEUR_GOED_FONT, bold=True)))
 
-    if rub["heeft_1e"] or rub["heeft_4b"]:
+    if rub["heeft_1e"] or rub["heeft_2a"] or rub["heeft_4a"] or rub["heeft_4b"]:
         ws.cell(row=rij + 1, column=1, value=(
-            "Let op: verlegde btw is fiscaal maatwerk — controleer 1e/4b met je boekhouder."
+            "Let op: verlegde btw is fiscaal maatwerk — controleer 1e/2a/4a/4b met je boekhouder."
         )).font = Font(italic=True, color=KLEUR_SLECHT_FONT)
         rij += 1
 

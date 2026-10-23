@@ -7,6 +7,14 @@
   "factuur_kenmerken": ["Voorbeeldbedrijf", "NL001234567B01", "12345678", "Voorbeeldstraat 1"],
   "_factuur_kenmerken": "Teksten waaraan Kwartaal herkent dat een bon een factuur OP JOUW NAAM is: je bedrijfsnaam, btw-id, KvK-nummer, adres. Boven 100 euro incl. btw eist de Belastingdienst zo'n factuur; een kassabon is dan niet genoeg. Leeg laten = niet controleren.",
 
+  "voorbelasting_vereist_bon": true,
+  "_voorbelasting_vereist_bon": "Art. 15 Wet OB: btw op inkopen mag je alleen aftrekken met een factuur. Staat dit aan, dan telt de btw van een uitgave pas mee in rubriek 5b als er een bon is gekoppeld (Bonnen-tab) of als je in de app 'factuur aanwezig' aanvinkt. Zet op false om elke uitgave mee te tellen (niet aanbevolen).",
+
+  "eu_verlegd_patronen": ["sanitino"],
+  "_eu_verlegd_patronen": "Leveranciers uit een ander EU-land die zonder btw factureren (intracommunautaire verwerving). De btw bereken je zelf: rubriek 4b, en in dezelfde aangifte aftrek in 5b. Alleen namen van leveranciers die echt 0% met 'btw verlegd' factureren; een EU-webshop die gewoon Nederlandse btw rekent hoort hier NIET.",
+  "buiten_eu_verlegd_patronen": [],
+  "_buiten_eu_verlegd_patronen": "Leveranciers van buiten de EU (diensten, bijvoorbeeld software uit de VS) zonder btw: rubriek 4a, aftrek in 5b.",
+
   "eigen_rekeningen": ["NL00BANK0123456789"],
   "_eigen_rekeningen": "IBAN's die als prive gelden (bv. je eigen spaarrekening) - transacties naar/van deze rekeningen tellen nergens mee.",
 

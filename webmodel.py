@@ -42,8 +42,15 @@ def tx_dict(t: dict) -> dict:
         "is_kredietfactuur": bool(t.get("is_kredietfactuur")),
         "auto_nul": bool(t.get("btw_auto_nul")),
         "nieuw": bool(t.get("is_nieuwe_leverancier")),
+        # Factuurstelsel: 'datum' is de factuurdatum als die is ingevuld, anders de boekdatum.
+        "boekdatum": _iso(t.get("boekdatum") or t["datum"]),
+        "factuurdatum": _iso(t["factuurdatum"]) if t.get("factuurdatum") else None,
+        "verlegging": t.get("verlegging"),
+        "bon_status": t.get("bon_status", "ontbreekt"),
+        "aftrekbaar": bool(t.get("aftrekbaar", True)),
         # Handmatig bewerkte velden met hun oorspronkelijke waarde (voor markering + herstel).
-        "bewerkt": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in (t.get("bewerkt") or {}).items()},
+        "bewerkt": {k: (round(v, 2) if isinstance(v, float) else _iso(v) if hasattr(v, "strftime") else v)
+                    for k, v in (t.get("bewerkt") or {}).items()},
     }
 
 
@@ -271,10 +278,13 @@ def model_naar_dict(model) -> dict:
     buiten_kwartaal = [{
         "id": t.get("tx_id"),
         "datum": _iso(t["datum"]),
+        "boekdatum": _iso(t.get("boekdatum") or t["datum"]),
+        "factuurdatum": _iso(t["factuurdatum"]) if t.get("factuurdatum") else None,
         "naam": t["naam"],
         "factuur": t.get("factuur", ""),
         "af_bij": t["af_bij"],
         "bedrag": round(-t["bedrag"] if t["af_bij"] == "Af" else t["bedrag"], 2),
+        "bewerkt": {k: _iso(v) if hasattr(v, "strftime") else v for k, v in (t.get("bewerkt") or {}).items()},
     } for t in sorted(model.buiten_kwartaal, key=lambda t: t["datum"])]
 
     niet_ingedeeld = [{
@@ -289,6 +299,7 @@ def model_naar_dict(model) -> dict:
 
     r = model.resultaat()
     periode = _periode_dict(model)
+    aangifte = _aangifte_dict(model, periode)
     # Nieuwe leveranciers dit kwartaal: de eerste controlestap (btw is daar een gok).
     nieuw_per = {}
     for t in model.transacties:
@@ -332,8 +343,14 @@ def model_naar_dict(model) -> dict:
         "nieuwe_leveranciers": nieuwe_leveranciers,
         "totalen": tot,
         "winst": round(tot["inkomsten_excl"] - tot["uitgaven_excl"], 2),
-        "btw_saldo": round(tot["inkomsten_btw"] - tot["uitgaven_btw"], 2),
-        "aangifte": _aangifte_dict(model, periode),
+        # De echte aangiftepositie (5c): alleen onderbouwde voorbelasting telt mee.
+        "btw_saldo": aangifte["btw_5c"],
+        "btw_saldo_boekhoudkundig": round(tot["inkomsten_btw"] - tot["uitgaven_btw"], 2),
+        "aangifte": aangifte,
+        "regels": {
+            "voorbelasting_vereist_bon": bool(model.config.get("voorbelasting_vereist_bon", True)),
+            "stelsel": "factuurstelsel",
+        },
         "buiten_periode": buiten,
         "buiten_kwartaal": buiten_kwartaal,
         "tellingen": {
@@ -348,6 +365,7 @@ def model_naar_dict(model) -> dict:
             "investeringen": r["aantal_investeringen"],
             "verlegd": r["aantal_verlegd"],
             "nieuwe_leveranciers": r["aantal_nieuwe_leveranciers"],
+            "niet_onderbouwd": r["aantal_niet_onderbouwd"],
         },
         "geen_periode_gevonden": r["geen_periode_gevonden"],
     }

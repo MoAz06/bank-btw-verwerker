@@ -97,7 +97,6 @@ class Api:
             return {"ok": False, "fout": "Nog geen bestand geladen."}
         try:
             self.model.zet_btw(tid, int(pct), onthoud_voor_leverancier=bool(onthoud))
-            self.bonnen_analyse = None
             return {"ok": True, "data": model_naar_dict(self.model)}
         except Exception:
             return {"ok": False, "fout": "Bewerken mislukt.", "detail": traceback.format_exc()}
@@ -107,7 +106,6 @@ class Api:
             return {"ok": False, "fout": "Nog geen bestand geladen."}
         try:
             self.model.wis_override(tid, "btw_pct")
-            self.bonnen_analyse = None
             return {"ok": True, "data": model_naar_dict(self.model)}
         except Exception:
             return {"ok": False, "fout": "Herstellen mislukt.", "detail": traceback.format_exc()}
@@ -119,13 +117,13 @@ class Api:
             return {"ok": False, "fout": "Kies inkomsten of uitgaven."}
         try:
             self.model.zet_override(tid, "richting", richting)
-            self.bonnen_analyse = None
             return {"ok": True, "data": model_naar_dict(self.model)}
         except Exception:
             return {"ok": False, "fout": "Indelen mislukt.", "detail": traceback.format_exc()}
 
     # ---- alles bewerkbaar: één generieke ingang ----
-    BEWERKBAAR = {"bedrag", "naam", "leverancier", "factuur", "btw_pct", "richting", "is_investering"}
+    BEWERKBAAR = {"bedrag", "naam", "leverancier", "factuur", "btw_pct", "richting", "is_investering",
+                  "factuurdatum", "verlegging", "bon_aanwezig"}
 
     @staticmethod
     def _parse_bedrag(waarde):
@@ -159,14 +157,30 @@ class Api:
                 if waarde not in {"inkomst", "uitgave"}:
                     return {"ok": False, "fout": "Kies inkomsten of uitgaven."}
                 nieuw = waarde
-            elif veld == "is_investering":
+            elif veld in ("is_investering", "bon_aanwezig"):
                 nieuw = bool(waarde) if not isinstance(waarde, str) else waarde.lower() in {"1", "true", "ja"}
+                if veld == "bon_aanwezig" and not nieuw:
+                    return self.herstel_veld(tid, veld)
+            elif veld == "factuurdatum":
+                from boekhouding import parse_factuurdatum
+                if not str(waarde or "").strip():
+                    return self.herstel_veld(tid, veld)
+                datum = parse_factuurdatum(waarde)
+                if not datum:
+                    return {"ok": False, "fout": "Dat is geen geldige datum. Gebruik dd-mm-jjjj, bijvoorbeeld 28-03-2026."}
+                nieuw = datum.strftime("%Y-%m-%d")
+            elif veld == "verlegging":
+                from berekening import VERLEGGING_SOORTEN
+                if not waarde or waarde == "geen":
+                    return self.herstel_veld(tid, veld)
+                if waarde not in VERLEGGING_SOORTEN:
+                    return {"ok": False, "fout": "Kies binnenland, EU of buiten de EU."}
+                nieuw = waarde
             else:  # naam, leverancier, factuur
                 nieuw = str(waarde or "").strip()[:200]
                 if not nieuw:
                     return self.herstel_veld(tid, veld)
             self.model.zet_override(tid, veld, nieuw)
-            self.bonnen_analyse = None
             return {"ok": True, "data": model_naar_dict(self.model)}
         except ValueError:
             return {"ok": False, "fout": "Dat is geen geldig bedrag. Gebruik bijvoorbeeld 1234,56."}
@@ -181,7 +195,6 @@ class Api:
             return {"ok": False, "fout": "Dit veld is niet te bewerken."}
         try:
             self.model.wis_override(tid, veld)
-            self.bonnen_analyse = None
             return {"ok": True, "data": model_naar_dict(self.model)}
         except Exception:
             return {"ok": False, "fout": "Herstellen mislukt.", "detail": traceback.format_exc()}
@@ -207,7 +220,10 @@ class Api:
                 kenmerken.append(config["bedrijfsnaam"])
             analyse = analyseer_bonnenmap(self.bonnen_map, self.model.transacties, kenmerken=kenmerken)
             self.bonnen_analyse = analyse
-            return {"ok": True, "data": bonnen_naar_dict(analyse)}
+            # Zeker gekoppelde bonnen zijn het bewijs voor de aftrek: het model rekent 5b opnieuw.
+            gekoppeld = {t["tx_id"] for _, treffers, _ in analyse["zeker"] for t in treffers if t.get("tx_id")}
+            self.model.zet_bonnen(gekoppeld)
+            return {"ok": True, "data": bonnen_naar_dict(analyse), "model": model_naar_dict(self.model)}
         except Exception:
             return {"ok": False, "fout": "Bonnen controleren mislukt. Staat er wel een map met pdf's of foto's?",
                     "detail": traceback.format_exc()}

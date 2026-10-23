@@ -145,6 +145,18 @@ function btwCel(r) {
 const VELD_LABELS = {
   bedrag: "Bedrag", naam: "Naam", leverancier: "Leverancier", factuur: "Factuurnummer",
   btw_pct: "Btw", richting: "Soort", is_investering: "Investering",
+  factuurdatum: "Factuurdatum", verlegging: "Verlegging", bon_aanwezig: "Factuur aanwezig",
+};
+const VERLEGGING_LABELS = {
+  geen: "Nee",
+  binnenland: "Ja, binnenland (rubriek 2a)",
+  eu: "Ja, EU-inkoop (rubriek 4b)",
+  buiten_eu: "Ja, buiten de EU (rubriek 4a)",
+};
+const BON_STATUS_TEKST = {
+  gekoppeld: "Bon gekoppeld",
+  bevestigd: "Factuur aanwezig (bevestigd)",
+  ontbreekt: "Geen bon of factuur",
 };
 
 function bedragInvoer(n) {
@@ -157,7 +169,10 @@ function isBewerkt(r, veld) {
 
 function herstelKnop(r, veld) {
   const orig = r.bewerkt[veld];
-  const origTekst = veld === "bedrag" ? geld(Number(orig)) : (orig == null || orig === "" ? "leeg" : String(orig));
+  const origTekst = veld === "bedrag" ? geld(Number(orig))
+    : veld === "factuurdatum" ? `boekdatum ${datum(orig)}`
+    : veld === "verlegging" ? (VERLEGGING_LABELS[orig || "geen"] || "Nee")
+    : (orig == null || orig === "" ? "leeg" : String(orig));
   const h = el("button", {
     class: "herstel", type: "button",
     title: `Herstel bankwaarde: ${origTekst}`,
@@ -185,10 +200,11 @@ function bewerkbaar(r, veld, opties = {}) {
 
 function openInvoer(wrap, r, veld, opties) {
   const isBedrag = veld === "bedrag";
-  const oud = isBedrag ? bedragInvoer(r.bedrag) : (r[veld] || "");
+  const oud = opties.invoer ? opties.invoer(r) : (isBedrag ? bedragInvoer(r.bedrag) : (r[veld] || ""));
   const input = el("input", {
     class: "bewerk-invoer" + (isBedrag ? " getal" : ""), type: "text",
     value: oud, inputMode: isBedrag ? "decimal" : "text", autocomplete: "off",
+    placeholder: opties.placeholder || "",
     "data-edit": `${r.id}:${veld}`,
     "aria-label": `${VELD_LABELS[veld]} voor ${r.naam}${isBedrag ? " (bedrag inclusief btw)" : ""}`,
   });
@@ -237,6 +253,44 @@ function investeringSchakelaar(r) {
   box.addEventListener("change", () => bewerkVeld(r.id, "is_investering", box.checked));
   const wrap = el("label", { class: "detail-onthoud bewerk" + (isBewerkt(r, "is_investering") ? " -bewerkt" : "") }, [box, "Telt als investering"]);
   if (isBewerkt(r, "is_investering")) wrap.append(herstelKnop(r, "is_investering"));
+  return wrap;
+}
+
+/* Factuurdatum: het tijdvak volgt de factuur (factuurstelsel), de boekdatum is de standaard. */
+function factuurdatumVeld(r) {
+  return bewerkbaar(r, "factuurdatum", {
+    toon: (x) => (x.factuurdatum ? datum(x.factuurdatum) : `${datum(x.boekdatum || x.datum)} (boekdatum)`),
+    invoer: (x) => (x.factuurdatum ? datum(x.factuurdatum) : ""),
+    placeholder: "dd-mm-jjjj",
+  });
+}
+
+/* Btw naar jou verlegd: binnenland (2a), EU-inkoop (4b) of buiten de EU (4a). */
+function verleggingKeuze(r) {
+  const sel = el("select", { class: "btw-select", "data-edit": `${r.id}:verlegging`,
+    "aria-label": `Btw verlegd naar mij voor ${r.naam}` });
+  for (const [k, label] of Object.entries(VERLEGGING_LABELS)) {
+    const o = el("option", { value: k, text: label });
+    if ((r.verlegging || "geen") === k) o.selected = true;
+    sel.append(o);
+  }
+  sel.addEventListener("change", () => bewerkVeld(r.id, "verlegging", sel.value));
+  const wrap = el("span", { class: "bewerk" + (isBewerkt(r, "verlegging") ? " -bewerkt" : "") }, sel);
+  if (isBewerkt(r, "verlegging")) wrap.append(herstelKnop(r, "verlegging"));
+  return wrap;
+}
+
+/* Bewijs voor de aftrek: gekoppelde bon, of handmatig bevestigd dat de factuur er is. */
+function bonSchakelaar(r) {
+  if (r.richting !== "uitgave" || r.is_kredietfactuur) return el("span", { class: "tx-soort", text: "Niet van toepassing" });
+  if (r.bon_status === "gekoppeld") return el("span", { class: "pil pil-inkomst", text: BON_STATUS_TEKST.gekoppeld });
+  const box = el("input", { type: "checkbox", id: `bon-${r.id}`, "data-edit": `${r.id}:bon_aanwezig` });
+  box.checked = r.bon_status === "bevestigd";
+  box.addEventListener("change", () => bewerkVeld(r.id, "bon_aanwezig", box.checked));
+  const wrap = el("label", { class: "detail-onthoud bewerk" + (isBewerkt(r, "bon_aanwezig") ? " -bewerkt" : "") }, [
+    box, "Ik heb de factuur of bon (niet gekoppeld in de app)",
+  ]);
+  if (isBewerkt(r, "bon_aanwezig")) wrap.append(herstelKnop(r, "bon_aanwezig"));
   return wrap;
 }
 
@@ -294,9 +348,12 @@ function transactieDetailRij(r, kolommen) {
         el("div", {}, [el("dt", { text: "Factuurnummer" }), el("dd", {}, bewerkbaar(r, "factuur", { leeg: "Geen" }))]),
         el("div", {}, [el("dt", { text: "Bedrag incl. btw" }), el("dd", {}, bewerkbaar(r, "bedrag", { toon: (x) => geld(Math.abs(x.bedrag)) }))]),
         el("div", {}, [el("dt", { text: "Soort" }), el("dd", {}, richtingKeuze(r))]),
+        el("div", {}, [el("dt", { text: "Factuurdatum (bepaalt het kwartaal)" }), el("dd", {}, factuurdatumVeld(r))]),
         el("div", {}, [el("dt", { text: "Exclusief btw" }), el("dd", { text: geld(r.excl) })]),
         el("div", {}, [el("dt", { text: "Btw-instelling" }), el("dd", {}, btwVeld)]),
         el("div", {}, [el("dt", { text: "Herkomst btw" }), el("dd", { text: btwBronTekst(r.btw_bron) })]),
+        el("div", {}, [el("dt", { text: "Btw naar mij verlegd" }), el("dd", {}, verleggingKeuze(r))]),
+        el("div", {}, [el("dt", { text: "Bewijs voor aftrek" }), el("dd", {}, bonSchakelaar(r))]),
         el("div", {}, [el("dt", { text: "Investering" }), el("dd", {}, investeringSchakelaar(r))]),
         el("div", {}, [el("dt", { text: "Tegenrekening" }), el("dd", { text: r.tegenrekening || "Niet beschikbaar" })]),
         el("div", { class: "detail-breed" }, [
@@ -351,7 +408,12 @@ function bouwTransactieTabel(rijen) {
       soort,
       el("td", { class: "getal tx-bedrag" }, bewerkbaar(r, "bedrag", { toon: (x) => geld(getoondBedrag(x)) })),
       btwCel(r),
-      el("td", { class: "getal tx-btw-bedrag", text: geld(r.btw) }),
+      el("td", { class: "getal tx-btw-bedrag" + (r.richting === "uitgave" && !r.aftrekbaar ? " -niet-aftrekbaar" : "") }, [
+        geld(r.btw),
+        r.richting === "uitgave" && !r.aftrekbaar
+          ? el("span", { class: "tx-markering", title: "Telt niet mee in 5b: geen bon of factuur gekoppeld", text: "geen bon" })
+          : null,
+      ]),
     ]);
     tbody.append(hoofd);
     if (open) tbody.append(transactieDetailRij(r, labels.length));
@@ -382,6 +444,7 @@ function bouwNietIngedeeld(rijen) {
 function paneelTransacties(d) {
   const nietIngedeeld = d.niet_ingedeeld || [];
   const nieuweLev = (d.tellingen && d.tellingen.nieuwe_leveranciers) || 0;
+  const zonderBon = (d.tellingen && d.tellingen.niet_onderbouwd) || 0;
   if (transactieState.filter === "niet_ingedeeld" && !nietIngedeeld.length) {
     transactieState.filter = "alle";
   }
@@ -397,6 +460,7 @@ function paneelTransacties(d) {
     ["inkomst", "Inkomsten"],
     ["uitgave", "Uitgaven"],
     ...(nieuweLev ? [["nieuw", `Nieuwe leveranciers (${nieuweLev})`]] : []),
+    ...(zonderBon ? [["zonder_bon", `Zonder bon of factuur (${zonderBon})`]] : []),
     ["bijzonder", "Bijzonderheden"],
     ["aangepast", "Aangepast"],
     ...(nietIngedeeld.length ? [["niet_ingedeeld", `Niet ingedeeld (${nietIngedeeld.length})`]] : []),
@@ -428,6 +492,7 @@ function paneelTransacties(d) {
           || r.richting === transactieState.filter
           || (transactieState.filter === "bijzonder" && transactieKenmerken(r).length > 0)
           || (transactieState.filter === "nieuw" && r.nieuw)
+          || (transactieState.filter === "zonder_bon" && r.richting === "uitgave" && !r.aftrekbaar)
           || (transactieState.filter === "aangepast" && (r.btw_bron === "override" || Object.keys(r.bewerkt || {}).length > 0));
         return tekstMatch && filterMatch;
       });
@@ -558,6 +623,19 @@ function maakActies(d) {
       tab: "opvallend",
     });
   }
+  // Art. 15 Wet OB: voorbelasting alleen met factuur. Btw op uitgaven zonder gekoppelde bon telt
+  // niet mee in 5b; koppelen of bevestigen haalt 'm erbij.
+  const zonderBon = (d.tellingen && d.tellingen.niet_onderbouwd) || 0;
+  if (zonderBon && d.aangifte.btw_niet_onderbouwd) {
+    acties.unshift({
+      niveau: "risico",
+      titel: `${zonderBon} ${zonderBon === 1 ? "uitgave" : "uitgaven"} zonder bon of factuur`,
+      context: `${geld(d.aangifte.btw_niet_onderbouwd)} btw telt nog niet mee in 5b. Koppel bonnen via de Bonnen-tab, of vink per regel "factuur aanwezig" aan.`,
+      actie: "Bekijk regels",
+      tab: "transacties",
+      filter: "zonder_bon",
+    });
+  }
   // Eerste controlestap: leveranciers die je dit kwartaal voor het eerst betaalt. Daar is de
   // btw een gok (standaard 21%), dus die staan bovenaan.
   const nieuw = (d.nieuwe_leveranciers || []).filter((n) => !n.bevestigd);
@@ -625,7 +703,10 @@ function paneelOverzicht(d) {
       el("h3", { id: "positie-titel", text: "Aangiftepositie" }),
       el("dl", { class: "resultaat-lijst" }, [
         resultaatRij("Verschuldigde btw · 5a", a.btw_5a),
-        resultaatRij("Voorbelasting · 5b", -Math.abs(a.btw_5b)),
+        resultaatRij("Voorbelasting met bewijs · 5b", -Math.abs(a.btw_5b)),
+        ...(a.btw_niet_onderbouwd
+          ? [resultaatRij("Btw zonder bon (telt niet mee)", a.btw_niet_onderbouwd, "-onderbouwing")]
+          : []),
         resultaatRij(saldoTerug ? "Terug te vragen · 5c" : "Af te dragen · 5c", Math.abs(a.btw_5c), "-totaal"),
       ]),
       el("p", { class: "deadline-regel", text:
@@ -677,11 +758,12 @@ function paneelOverzicht(d) {
     }, [
       el("div", { class: "sectie-kop" }, [
         el("h3", { id: "buiten-kwartaal-titel", text: "Na het kwartaaleinde" }),
-        el("p", { text: "Het bankbestand loopt een paar dagen door in het volgende kwartaal. Deze boekingen tellen hier niet mee; ze horen in de volgende aangifte." }),
+        el("p", { text: "Het bankbestand loopt een paar dagen door in het volgende kwartaal. Deze boekingen tellen hier niet mee; ze horen in de volgende aangifte. Staat de factuur wél in dit kwartaal gedateerd? Vul dan de factuurdatum in, dan telt de regel hier mee." }),
       ]),
       bouwTabel(
         [
-          { key: "datum", label: "Datum", render: datum },
+          { key: "boekdatum", label: "Boekdatum", render: datum },
+          { key: "factuurdatum", label: "Factuurdatum", cel: (r) => el("td", {}, factuurdatumVeld(r)) },
           { key: "naam", label: "Naam" },
           { key: "factuur", label: "Omschrijving" },
           { key: "bedrag", label: "Bedrag", getal: true, render: geld },
@@ -710,7 +792,10 @@ function paneelAangifte(d) {
   if (a.heeft_1b) rubrieken.push({ label: "1b  Leveringen/diensten belast met 9%", omzet: a.omzet_1b, btw: a.btw_1b });
   if (a.heeft_1e) rubrieken.push({ label: "1e  Omzet met btw verlegd naar afnemer (0%)", omzet: a.verlegd_verkoop_excl, btw: 0 });
   if (a.heeft_overige) rubrieken.push({ label: "Overige omzet 0% / anders (controleer)", omzet: a.overige_excl, btw: a.overige_btw || 0 });
-  if (a.heeft_4b) rubrieken.push({ label: "4b  Btw naar mij verlegd (inkoop onderaanneming)", omzet: a.verlegd_inkoop_excl, btw: a.verlegd_inkoop_btw });
+  // Naar jou verlegde btw: binnenland 2a, buiten EU 4a, EU-inkoop 4b (Toelichting btw-aangifte 2026).
+  if (a.heeft_2a) rubrieken.push({ label: "2a  Btw naar mij verlegd (binnenland, onderaanneming)", omzet: a.verlegd_2a_excl, btw: a.verlegd_2a_btw });
+  if (a.heeft_4a) rubrieken.push({ label: "4a  Inkoop van buiten de EU (btw verlegd)", omzet: a.verlegd_4a_excl, btw: a.verlegd_4a_btw });
+  if (a.heeft_4b) rubrieken.push({ label: "4b  Inkoop uit andere EU-landen (btw verlegd)", omzet: a.verlegd_4b_excl, btw: a.verlegd_4b_btw });
   rubrieken.push({ label: "5a  Verschuldigde omzetbelasting", omzet: null, btw: a.btw_5a, vet: true });
   rubrieken.push({ label: "5b  Voorbelasting (terug te vragen)", omzet: null, btw: a.btw_5b, vet: true });
   rubrieken.push({ label: "5c  Te betalen (+) / terug te vragen (−)", omzet: null, btw: a.btw_5c, vet: true });
@@ -724,9 +809,15 @@ function paneelAangifte(d) {
     rubrieken
   ));
 
-  if (a.heeft_1e || a.heeft_4b) {
-    kinderen.push(el("p", { class: "melding-leeg", text: "Let op: verlegde btw is fiscaal maatwerk — controleer 1e/4b met je boekhouder." }));
+  if (a.btw_niet_onderbouwd) {
+    kinderen.push(el("p", { class: "melding-leeg", text:
+      `Niet in 5b: ${geld(a.btw_niet_onderbouwd)} btw op uitgaven zonder gekoppelde bon of factuur. Aftrek mag alleen met een factuur (art. 15 Wet OB). Koppel de bonnen via de Bonnen-tab, of vink per regel "factuur aanwezig" aan.` }));
   }
+  if (a.heeft_1e || a.heeft_2a || a.heeft_4a || a.heeft_4b) {
+    kinderen.push(el("p", { class: "melding-leeg", text: "Let op: verlegde btw is fiscaal maatwerk — controleer 1e/2a/4a/4b met je boekhouder." }));
+  }
+  kinderen.push(el("p", { class: "table-note", text:
+    "Factuurstelsel: het kwartaal volgt de factuurdatum, niet de dag van betalen (art. 13 en 15 Wet OB). Zonder ingevulde factuurdatum gebruikt Kwartaal de boekdatum van de bank; vul de factuurdatum in via de detailregel van een transactie als die in een ander kwartaal valt." }));
 
   const teBetalen = a.reserveren > 0;
   kinderen.push(el("section", { class: "aangifte-uitkomst", "aria-label": "Uitkomst aangifte" }, [
@@ -977,10 +1068,12 @@ async function controleerBonnen() {
       return;
     }
     bonnenData = r.data;
+    // Gekoppelde bonnen zijn het bewijs voor de aftrek: het model komt vers mee (5b is herrekend).
+    if (r.model) renderModel(r.model);
     bouwTablist();
     toonTab("bonnen");
     status("");
-    toonToast("Bonnen gecontroleerd", `${bonnenData.totaal_bonnen} bestanden zijn verwerkt.`, "ok");
+    toonToast("Bonnen gecontroleerd", `${bonnenData.totaal_bonnen} bestanden zijn verwerkt; de voorbelasting is bijgewerkt.`, "ok");
   } catch (fout) {
     toonToast("Bonnencontrole mislukt", "De map kon niet worden verwerkt.", "fout");
     status("");

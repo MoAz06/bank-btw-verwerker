@@ -155,6 +155,22 @@ git add .gitignore README.md requirements.txt config.example.json HANDOFF.md
 git commit -m "readme, requirements, gitignore en handoff bijgewerkt voor de app en de exe-build"
 ```
 
+## 8b. Wetgevingsonderzoek (23-10-2026)
+
+`reports/Nederlandse btw wetgeving eenmanszaak.md` is een onderzoeksrapport (ca. 8.400 woorden) over de Nederlandse btw-regels 2026 voor deze eenmanszaak, met bij elke bewering een bron (wetten.overheid.nl, belastingdienst.nl incl. de Toelichting btw-aangifte 2026, rijksoverheid.nl, rvo.nl, kvk.nl); de onderliggende notities staan in `research_notes/`. Het hoofdstuk "Gevolgen voor de app Kwartaal" bevat 20 concrete punten. De belangrijkste afwijkingen van de huidige app:
+- Binnenlands verlegde btw (inkoop onderaannemer) hoort in **rubriek 2a** + 5b; **4b is EU-inkoop**, 4a niet-EU. De app toont binnenlandse verlegging nu als 4b.
+- Een installateur die aan bedrijven factureert valt onder het **factuurstelsel**: de factuurdatum bepaalt het tijdvak, niet de ING-boekdatum. De app werkt op boekdatum (moet als expliciete keuze/afwijking worden getoond).
+- Zonder factuur of bon is er wettelijk geen voorbelasting; de app telt standaard 21% voor elke uitgave.
+- Privégebruik auto (2,7%/1,5%) alleen in de laatste aangifte van het jaar in rubriek 1d; suppletiedrempel EUR 1.000; afschrijving/KIA horen niet in de btw-aangifte.
+
+## 8c. Wettelijke aanpassingen doorgevoerd (23-10-2026)
+
+Op basis van het rapport zijn drie structurele punten in de app gezet (bronnen in `reports/`):
+- **Verlegging per rubriek.** `berekening.bepaal_verlegging` + config `verlegd_patronen` (binnenland, rubriek 2a), `eu_verlegd_patronen` (EU-inkoop, 4b), `buiten_eu_verlegd_patronen` (4a). Per transactie override `verlegging` (binnenland|eu|buiten_eu; "geen" = herstellen) via de detailregel. `bepaal_rubrieken` levert `verlegd_2a_*`, `verlegd_4a_*`, `verlegd_4b_*` + `heeft_2a/4a/4b`; 5a en 5b bevatten de verlegde btw allebei.
+- **Factuurstelsel.** Override `factuurdatum` (ISO; de Api accepteert ook dd-mm-jjjj; leeg = herstellen). In `Boekhouding.bereken` wordt `datum` vervangen door de factuurdatum (origineel in `boekdatum`), vóór het kwartaalvenster; `tx_id` rekent altijd met de boekdatum. Een juli-boeking met factuurdatum in juni telt dus mee in Q2 (bewerkbaar in de Overzicht-tabel "Na het kwartaaleinde"), en andersom.
+- **Geen voorbelasting zonder bewijs.** Config `voorbelasting_vereist_bon` (standaard true). Per uitgave `bon_status`: gekoppeld (zeker-match uit de bonnencontrole, `model.zet_bonnen(ids)` via `Api.controleer_bonnen`, dat nu ook `"model"` teruggeeft), bevestigd (override `bon_aanwezig: true`, checkbox "Ik heb de factuur") of ontbreekt. `aftrekbaar` bepaalt of de btw in 5b zit; `bepaal_rubrieken` geeft `btw_onderbouwd` en `btw_niet_onderbouwd`. Kredietfacturen, 0%-regels en verlegde btw tellen altijd. `model_naar_dict["btw_saldo"]` is nu 5c; het oude boekhoudkundige saldo heet `btw_saldo_boekhoudkundig`. De bonnen-analyse wordt niet meer gewist bij een bewerking. Excel: nieuwe rubriekregels en een "Niet in 5b"-regel. Regressie-golden ongewijzigd (die leest `model.aangifte`, het boekhoudkundige saldo).
+Tests: scratchpad `test_wet.py` (26 checks), gedragstest en test_controles groen.
+
 ## 9. Mogelijke vervolgstappen
 
 - `dist\Kwartaal.exe` opnieuw bouwen met de huidige spec (oude exe-naam ligt er nog).

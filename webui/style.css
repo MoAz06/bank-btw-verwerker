@@ -655,6 +655,10 @@ td.getal .bewerk-tekst { flex-shrink: 0; white-space: nowrap; }
   text-align: right;
   white-space: nowrap;
 }
+.resultaat-rij.-onderbouwing dt, .resultaat-rij.-onderbouwing dd { color: var(--negative); font-size: 0.9rem; }
+.resultaat-rij.-onderbouwing dd { font-weight: 400; }
+.tx-btw-bedrag.-niet-aftrekbaar { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--negative); }
+.tx-btw-bedrag .tx-markering { color: var(--negative); text-decoration: none; }
 .resultaat-rij.-totaal { margin-top: 0.35rem; padding-top: 0.75rem; border-top: 1px solid var(--ink); }
 .resultaat-rij.-totaal dt { color: var(--ink); font-family: var(--font-display); font-size: 1.02rem; font-weight: 600; }
 .resultaat-rij.-totaal dt::after { border-bottom-color: transparent; }
